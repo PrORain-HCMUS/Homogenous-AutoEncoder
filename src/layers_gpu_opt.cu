@@ -8,7 +8,8 @@
 
 #include <cstdio>
 
-__global__ void gpu_relu_forward_kernel(const float* input, float* output, size_t n);
+// Declare external kernel from layers_gpu.cu
+extern __global__ void relu_forward_kernel(const float* input, float* output, size_t n);
 
 #define TILE_WIDTH 16
 #define TILE_HEIGHT 16
@@ -271,7 +272,7 @@ void gpu_relu_forward_opt(const GPUTensor4D& input, GPUTensor4D& output) {
     } else {
         int block_size = 256;
         int grid_size = (n + block_size - 1) / block_size;
-        gpu_relu_forward_kernel<<<grid_size, block_size>>>(input.d_data, output.d_data, n);
+        relu_forward_kernel<<<grid_size, block_size>>>(input.d_data, output.d_data, n);
     }
     CUDA_CHECK(cudaGetLastError());
 }
