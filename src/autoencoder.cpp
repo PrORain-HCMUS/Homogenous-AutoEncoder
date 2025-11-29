@@ -66,7 +66,6 @@ void Autoencoder::backward(const std::vector<float>& loss_grad, float learning_r
     }
 }
 
-// Thêm vào src/autoencoder.cpp
 void Autoencoder::save_weights(const std::string& filepath) {
     std::ofstream file(filepath, std::ios::binary);
     if (!file.is_open()) {

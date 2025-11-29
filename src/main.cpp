@@ -3,6 +3,7 @@
 #include <chrono>
 #include <algorithm>
 #include <random>
+#include <string> // Cần thiết để xử lý tên file
 #include "../include/dataset.h"
 #include "../include/autoencoder.h"
 
@@ -38,22 +39,24 @@ int main(int argc, char** argv) {
     Autoencoder model;
 
     // ========================================================================
-    // [CONFIGURATION AREA] - CHỌN 1 TRONG 2 CHẾ ĐỘ BÊN DƯỚI (COMMENT/UNCOMMENT)
+    // [CONFIGURATION AREA] - CHỌN 1 TRONG 2 CHẾ ĐỘ (COMMENT / UNCOMMENT)
     // ========================================================================
 
-    // --- MODE 1: QUICK TEST (Dùng để debug xem loss có giảm không) ---
-    // Chạy trên 64 ảnh (2 batches), chạy 10 epochs để thấy rõ loss giảm.
-    // -----------------------------------------------------------------
+    // --- MODE 1: QUICK TEST (Debug logic - Dùng để kiểm tra code) ---
+    // Chạy 64 ảnh, 10 epoch. Lưu vào file cpu_model_test.bin
+    // ---------------------------------------------------------
     int num_train = 64; 
     int num_epochs = 2; 
+    std::string model_save_path = "weights/cpu_model_test.bin"; 
     std::cout << ">> RUNNING MODE: QUICK TEST (64 images, 2 epochs)" << std::endl;
 
 
-    // --- MODE 2: FULL TRAINING (Dùng để đo thời gian baseline) ---
-    // Chạy trên 50,000 ảnh, chỉ chạy 1 epoch vì CPU rất chậm.
-    // -----------------------------------------------------------------
+    // --- MODE 2: FULL TRAINING (Baseline benchmark - Chạy thật) ---
+    // Chạy 50.000 ảnh, 1 epoch. Lưu vào file cpu_model.bin
+    // ---------------------------------------------------------
     // int num_train = dataset.train_images.size();
     // int num_epochs = 1;
+    // std::string model_save_path = "weights/cpu_model.bin"; 
     // std::cout << ">> RUNNING MODE: FULL TRAINING (50000 images, 1 epoch)" << std::endl;
 
     // ========================================================================
@@ -64,7 +67,7 @@ int main(int argc, char** argv) {
     std::cout << "Start Training..." << std::endl;
     auto start_time = std::chrono::high_resolution_clock::now();
 
-    // Tạo danh sách indices để shuffle
+    // Tạo danh sách index để shuffle
     std::vector<int> indices(num_train);
     for(int i=0; i<num_train; ++i) indices[i] = i;
 
@@ -97,16 +100,16 @@ int main(int argc, char** argv) {
                 model.backward(loss_grad, LEARNING_RATE);
             }
 
-            // In tiến độ mỗi 100 batches (hoặc mỗi batch nếu đang test ít dữ liệu)
+            // In tiến độ
             if (num_train <= 1000 || (i / BATCH_SIZE) % 100 == 0) {
                 std::cout << "Epoch " << epoch + 1 << "/" << num_epochs 
                           << ", Batch " << i / BATCH_SIZE 
                           << ", Loss: " << total_loss / (i + 1) << "\r" << std::flush;
             }
         }
-        
-        // Xuống dòng khi hết epoch
         std::cout << std::endl;
+        
+        // Nếu chạy test ít dữ liệu thì in ra avg loss để dễ theo dõi
         if (num_train <= 1000) {
              std::cout << "-> Avg Epoch Loss: " << total_loss / num_train << std::endl;
         }
@@ -116,6 +119,11 @@ int main(int argc, char** argv) {
     std::chrono::duration<double> elapsed = end_time - start_time;
     
     std::cout << "Training finished in " << elapsed.count() << " seconds." << std::endl;
+
+    // 4. Save Weights
+    // Cần tạo thư mục weights trước: mkdir weights
+    std::cout << "Saving model to " << model_save_path << "..." << std::endl;
+    model.save_weights(model_save_path);
 
     return 0;
 }
