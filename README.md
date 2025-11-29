@@ -12,10 +12,9 @@
 ```text
 CSC14120_FinalProject/
 ├── data/                        # Chứa dữ liệu CIFAR-10
-│   └── cifar-10-batches-bin/    # File binary giải nén từ trang chủ CIFAR (bắt buộc dùng bản binary)
-│       ├── data_batch_1.bin
-│       ├── ...
-│       └── test_batch.bin
+│   ├── data_batch_1.bin
+│   ├── ...
+│   └── test_batch.bin
 ├── include/                     # Các file header (.h) định nghĩa class và cấu trúc
 │   ├── dataset.h                # Class xử lý đọc file binary CIFAR-10
 │   ├── layer.h                  # Class cơ sở và các layer (Conv2D, ReLU, MaxPool...)
@@ -41,3 +40,7 @@ CSC14120_FinalProject/
 └── README.md                    # Tài liệu hướng dẫn này
 
 ```
+
+Chạy phase 1:
+mingw32-make
+./build/project_run data/
