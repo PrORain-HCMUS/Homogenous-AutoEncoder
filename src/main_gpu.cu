@@ -19,10 +19,6 @@
 #include "svm_wrapper.h"
 #endif
 
-// =============================================================================
-// GPU Training Logger - Logs training progress and GPU optimizations
-// =============================================================================
-
 std::string get_timestamp_gpu() {
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::system_clock::to_time_t(now);
@@ -253,10 +249,13 @@ public:
     }
 };
 
-void print_gpu_info() {
+int get_device_count() {
     int device_count = 0;
-    cudaGetDeviceCount(&device_count);
-    
+    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    return device_count;
+}
+
+void print_gpu_info(int device_count) {
     if (device_count == 0) {
         std::cerr << "No CUDA-capable devices found!" << std::endl;
         return;
@@ -264,7 +263,7 @@ void print_gpu_info() {
     
     for (int i = 0; i < device_count; ++i) {
         cudaDeviceProp prop;
-        cudaGetDeviceProperties(&prop, i);
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, i));
         std::cout << "GPU " << i << ": " << prop.name << std::endl;
         std::cout << "  Compute capability: " << prop.major << "." << prop.minor << std::endl;
         std::cout << "  Total memory: " << (prop.totalGlobalMem / (1024 * 1024)) << " MB" << std::endl;
@@ -276,14 +275,14 @@ void print_gpu_info() {
 int main(int argc, char** argv) {
     std::string data_dir = "data";
     int epochs = 20;
-    int batch_size = 64;
+    int batch_size = 32;
     float learning_rate = 1e-3f;
     std::string csv_path = "gpu_phase2_log.csv";
     std::string txt_path = "gpu_phase2_log.txt";
     int max_train_images = 0;
     std::string weights_load_path;
     std::string weights_save_path = "autoencoder_gpu.weights";
-    bool verify_mode = false;
+    int device_id = 0;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -305,8 +304,8 @@ int main(int argc, char** argv) {
             weights_load_path = argv[++i];
         } else if (arg == "--save-weights" && i + 1 < argc) {
             weights_save_path = argv[++i];
-        } else if (arg == "--verify") {
-            verify_mode = true;
+        } else if (arg == "--device" && i + 1 < argc) {
+            device_id = std::stoi(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [options]\n"
                       << "Options:\n"
@@ -319,23 +318,35 @@ int main(int argc, char** argv) {
                       << "  --max-images <n>     Max training images (0=all)\n"
                       << "  --load-weights <f>   Load weights from file\n"
                       << "  --save-weights <f>   Save weights to file\n"
-                      << "  --verify             Run GPU/CPU verification mode\n"
+                      << "  --device <n>         GPU device ID (default: 0)\n"
                       << "  --help               Show this help\n";
             return 0;
         }
     }
 
     std::cout << "=== GPU Autoencoder Training (Phase 2) ===" << std::endl;
-    print_gpu_info();
+    
+    int device_count = get_device_count();
+    if (device_count == 0) {
+        std::cerr << "Error: No CUDA-capable devices found!" << std::endl;
+        return 1;
+    }
+    
+    if (device_id < 0 || device_id >= device_count) {
+        std::cerr << "Error: Invalid device ID " << device_id 
+                  << ". Available devices: 0-" << (device_count - 1) << std::endl;
+        return 1;
+    }
+    
+    print_gpu_info(device_count);
     std::cout << std::endl;
-
-    CUDA_CHECK(cudaSetDevice(0));
     
-    // Get GPU properties for logging
+    std::cout << "Using GPU device: " << device_id << std::endl;
+    CUDA_CHECK(cudaSetDevice(device_id));
+    
     cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, 0);
+    CUDA_CHECK(cudaGetDeviceProperties(&prop, device_id));
     
-    // Initialize logger
     GPUTrainingLogger logger(txt_path, csv_path);
     logger.log_config(epochs, batch_size, learning_rate, data_dir, 
                       max_train_images, weights_load_path, weights_save_path);
@@ -379,8 +390,6 @@ int main(int argc, char** argv) {
     
     logger.log_dataset_info(effective_train, test.num_images, num_batches);
 
-    // ========================================================================
-    // ========================================================================
     std::cout << "Initializing GPU autoencoder..." << std::endl;
     logger.log("Initializing GPU autoencoder...");
     GPUAutoencoder autoencoder;
@@ -405,7 +414,9 @@ int main(int argc, char** argv) {
     GPUTensor4D gpu_batch(batch_size, 3, 32, 32);
     GPUTensor4D gpu_output;
 
-    std::vector<float> h_batch(static_cast<size_t>(batch_size) * 3 * 32 * 32);
+    const size_t h_batch_size = static_cast<size_t>(batch_size) * 3 * 32 * 32;
+    float* h_batch = nullptr;
+    CUDA_CHECK(cudaMallocHost(&h_batch, h_batch_size * sizeof(float)));
 
     std::cout << "\n=== Starting Training ===" << std::endl;
     std::cout << "Epochs: " << epochs << ", LR: " << learning_rate << std::endl;
@@ -433,11 +444,11 @@ int main(int argc, char** argv) {
             for (int b = 0; b < batch_size; ++b) {
                 int img_idx = indices[batch * batch_size + b];
                 const float* src = train.images.data() + static_cast<size_t>(img_idx) * 3 * 32 * 32;
-                float* dst = h_batch.data() + static_cast<size_t>(b) * 3 * 32 * 32;
+                float* dst = h_batch + static_cast<size_t>(b) * 3 * 32 * 32;
                 std::copy(src, src + 3 * 32 * 32, dst);
             }
 
-            gpu_batch.copy_from_host(h_batch.data());
+            gpu_batch.copy_from_host(h_batch);
 
             float loss = autoencoder.train_step(gpu_batch, gpu_batch, learning_rate);
             epoch_loss += loss;
@@ -445,7 +456,6 @@ int main(int argc, char** argv) {
             auto batch_end = std::chrono::high_resolution_clock::now();
             double batch_ms = std::chrono::duration<double, std::milli>(batch_end - batch_start).count();
 
-            // Log every 50 batches or last batch to TXT
             if ((batch + 1) % 50 == 0 || batch == num_batches - 1) {
                 logger.log_batch(batch + 1, num_batches, loss, batch_ms);
                 logger.write_csv_batch(epoch + 1, batch + 1, loss, batch_ms);
@@ -465,7 +475,6 @@ int main(int argc, char** argv) {
         float avg_loss = epoch_loss / num_batches;
         epoch_losses.push_back(avg_loss);
         
-        // Track best loss
         bool is_best = avg_loss < best_loss;
         if (is_best) {
             best_loss = avg_loss;
@@ -484,7 +493,6 @@ int main(int argc, char** argv) {
     auto total_end = std::chrono::high_resolution_clock::now();
     double total_sec = std::chrono::duration<double>(total_end - total_start).count();
 
-    // Calculate average loss
     float final_avg_loss = 0.0f;
     for (float l : epoch_losses) {
         final_avg_loss += l;
@@ -571,6 +579,8 @@ int main(int argc, char** argv) {
     
     logger.log_svm_results(accuracy, effective_train, test.num_images, feature_dim);
 #endif
+
+    CUDA_CHECK(cudaFreeHost(h_batch));
 
     CUDA_CHECK(cudaDeviceReset());
 

@@ -645,7 +645,6 @@ void GPUUpSample2DLayer::backward(const GPUTensor4D& input, const GPUTensor4D& g
     int out_h = grad_output.h;
     int out_w = grad_output.w;
     
-    // Use 2D thread blocks
     dim3 block(16, 16);
     dim3 grid(
         (out_w + block.x - 1) / block.x,
