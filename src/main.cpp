@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <random>
@@ -14,20 +15,12 @@
 #endif
 
 int main(int argc, char **argv) {
-    // Default parameters (can be overridden via command-line):
-    // argv[1] = data_dir (default: "data")
-    // argv[2] = epochs (int)
-    // argv[3] = batch_size (int)
-    // argv[4] = learning_rate (float)
-    // argv[5] = log_csv_path (optional, e.g., "cpu_phase1_log.csv")
-    // argv[6] = max_train_images (optional, int; 0 or missing = use all)
-    // argv[7] = use_openmp (optional, 0/1; when 1, try to use max_threads-2)
     std::string data_dir = "data";
     int epochs = 5;
     int batch_size = 32;
     float learning_rate = 1e-3f;
     std::string log_path;
-    int max_train_images = 1000;  // default: use 1000 images for faster CPU experiments
+    int max_train_images = 1000;
     bool use_openmp = false;
 
     if (argc > 1) {
@@ -123,23 +116,18 @@ int main(int argc, char **argv) {
                 Tensor4D target(batch_size, CIFAR10Dataset::IMAGE_CHANNELS,
                                 CIFAR10Dataset::IMAGE_HEIGHT, CIFAR10Dataset::IMAGE_WIDTH);
 
+                const std::size_t image_size = static_cast<std::size_t>(CIFAR10Dataset::IMAGE_SIZE);
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
                 for (int i = 0; i < batch_size; ++i) {
-                    int img_idx = indices[b * batch_size + i];
-                    const float *src = &train.images[static_cast<std::size_t>(img_idx) *
-                                                     CIFAR10Dataset::IMAGE_SIZE];
-                    for (int c = 0; c < CIFAR10Dataset::IMAGE_CHANNELS; ++c) {
-                        for (int h = 0; h < CIFAR10Dataset::IMAGE_HEIGHT; ++h) {
-                            for (int w = 0; w < CIFAR10Dataset::IMAGE_WIDTH; ++w) {
-                                int idx =
-                                    c * CIFAR10Dataset::IMAGE_HEIGHT *
-                                        CIFAR10Dataset::IMAGE_WIDTH +
-                                    h * CIFAR10Dataset::IMAGE_WIDTH + w;
-                                float val = src[idx];
-                                input.at(i, c, h, w) = val;
-                                target.at(i, c, h, w) = val;
-                            }
-                        }
-                    }
+                    const int img_idx = indices[b * batch_size + i];
+                    const float* __restrict__ src = &train.images[static_cast<std::size_t>(img_idx) * image_size];
+                    float* __restrict__ input_ptr = input.data.data() + static_cast<std::size_t>(i) * image_size;
+                    float* __restrict__ target_ptr = target.data.data() + static_cast<std::size_t>(i) * image_size;
+                    
+                    std::memcpy(input_ptr, src, image_size * sizeof(float));
+                    std::memcpy(target_ptr, src, image_size * sizeof(float));
                 }
 
                 float loss = model.train_step(input, target, learning_rate);
