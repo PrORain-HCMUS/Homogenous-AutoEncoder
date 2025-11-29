@@ -100,4 +100,19 @@ float gpu_mse_loss(const GPUTensor4D& output, const GPUTensor4D& target);
 float gpu_mse_loss_with_grad(const GPUTensor4D& output, const GPUTensor4D& target,
                               GPUTensor4D& grad_output);
 
+#ifdef USE_OPTIMIZED_KERNELS
+void gpu_relu_forward_opt(const GPUTensor4D& input, GPUTensor4D& output);
+void gpu_relu_backward_opt(const GPUTensor4D& input, const GPUTensor4D& grad_output,
+                           GPUTensor4D& grad_input);
+void gpu_maxpool2d_forward_opt(const GPUTensor4D& input, GPUTensor4D& output,
+                               int k, int stride);
+void gpu_upsample2d_forward_opt(const GPUTensor4D& input, GPUTensor4D& output, int scale);
+void gpu_conv2d_forward_tiled(const GPUTensor4D& input, const float* d_weights,
+                              const float* d_bias, GPUTensor4D& output,
+                              int in_c, int out_c, int k, int stride, int padding);
+void gpu_conv2d_relu_forward_opt(const GPUTensor4D& input, const float* d_weights,
+                                 const float* d_bias, GPUTensor4D& output,
+                                 int in_c, int out_c, int k, int stride, int padding);
+#endif
+
 #endif  // GPU_LAYER_H

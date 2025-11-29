@@ -1,3 +1,5 @@
+#ifdef USE_OPTIMIZED_KERNELS
+
 #include "gpu_layer.h"
 #include "cuda_utils.h"
 
@@ -247,12 +249,9 @@ __global__ void mse_loss_grad_fused_kernel(
     }
 }
 
-// ============================================================================
-// ============================================================================
-
 void gpu_relu_forward_opt(const GPUTensor4D& input, GPUTensor4D& output) {
     size_t n = input.size();
-    size_t n4 = n / 4;  // Number of float4 elements
+    size_t n4 = n / 4;
     
     if (output.n != input.n || output.c != input.c ||
         output.h != input.h || output.w != input.w) {
@@ -407,3 +406,5 @@ void gpu_conv2d_forward_tiled(
     );
     CUDA_CHECK(cudaGetLastError());
 }
+
+#endif  // USE_OPTIMIZED_KERNELS
