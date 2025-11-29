@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cmath>
 #include <cfloat>
+#include <vector>
 
 __global__ void fill_zero_kernel(float* data, size_t n) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
