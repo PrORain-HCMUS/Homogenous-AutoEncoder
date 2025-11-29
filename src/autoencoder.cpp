@@ -44,7 +44,7 @@ Tensor4D Autoencoder::encode(const Tensor4D &input) const {
     x = relu2_.forward(x);
     x = pool2_.forward(x);
 
-    return x;  // latent feature map (e.g., 8x8x128 for CIFAR-10)
+    return x;
 }
 
 float Autoencoder::train_step(const Tensor4D &input, const Tensor4D &target,

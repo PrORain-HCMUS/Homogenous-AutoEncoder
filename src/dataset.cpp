@@ -60,7 +60,7 @@ void append_batch(CifarBatch &dst, const CifarBatch &src) {
     dst.num_images = static_cast<int>(dst.labels.size());
 }
 
-}  // namespace
+}
 
 CifarBatch CIFAR10Dataset::load_batch(const std::string &file_path) {
     return load_cifar10_batch_impl(file_path);

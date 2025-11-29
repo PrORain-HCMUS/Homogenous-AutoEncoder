@@ -92,7 +92,7 @@ float GPUAutoencoder::train_step(const GPUTensor4D& input, const GPUTensor4D& ta
     conv2_.backward(x3_, g4_, g3_, learning_rate);
     pool1_.backward(x2_, g3_, g2_);
     relu1_.backward(x1_, g2_, g1_);
-    conv1_.backward(input, g1_, g1_, learning_rate);
+    conv1_.backward(input, g1_, g0_, learning_rate);
 
     return loss;
 }
@@ -101,11 +101,23 @@ bool GPUAutoencoder::save_weights(const std::string& path) const {
     std::ofstream out(path, std::ios::binary);
     if (!out) return false;
 
+    const uint32_t MAGIC = 0x48414557;
+    const uint32_t VERSION = 1;
+    const uint32_t NUM_LAYERS = 5;
+    out.write(reinterpret_cast<const char*>(&MAGIC), sizeof(uint32_t));
+    out.write(reinterpret_cast<const char*>(&VERSION), sizeof(uint32_t));
+    out.write(reinterpret_cast<const char*>(&NUM_LAYERS), sizeof(uint32_t));
+
     auto save_conv = [&out](const GPUConv2DLayer& layer) {
-        size_t w_size = static_cast<size_t>(layer.get_out_channels()) * 
-                        layer.get_in_channels() * 
-                        layer.get_kernel_size() * layer.get_kernel_size();
-        int b_size = layer.get_out_channels();
+        int in_c = layer.get_in_channels();
+        int out_c = layer.get_out_channels();
+        int k = layer.get_kernel_size();
+        out.write(reinterpret_cast<const char*>(&in_c), sizeof(int));
+        out.write(reinterpret_cast<const char*>(&out_c), sizeof(int));
+        out.write(reinterpret_cast<const char*>(&k), sizeof(int));
+        
+        size_t w_size = static_cast<size_t>(out_c) * in_c * k * k;
+        int b_size = out_c;
 
         std::vector<float> h_weights(w_size);
         std::vector<float> h_bias(b_size);
@@ -133,11 +145,41 @@ bool GPUAutoencoder::load_weights(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return false;
 
+    const uint32_t EXPECTED_MAGIC = 0x48414557;
+    uint32_t magic = 0, version = 0, num_layers = 0;
+    in.read(reinterpret_cast<char*>(&magic), sizeof(uint32_t));
+    in.read(reinterpret_cast<char*>(&version), sizeof(uint32_t));
+    in.read(reinterpret_cast<char*>(&num_layers), sizeof(uint32_t));
+    
+    if (magic != EXPECTED_MAGIC) {
+        std::cerr << "Invalid weight file format (bad magic number)" << std::endl;
+        return false;
+    }
+    if (version != 1) {
+        std::cerr << "Unsupported weight file version: " << version << std::endl;
+        return false;
+    }
+    if (num_layers != 5) {
+        std::cerr << "Layer count mismatch: expected 5, got " << num_layers << std::endl;
+        return false;
+    }
+
     auto load_conv = [&in](GPUConv2DLayer& layer) -> bool {
-        size_t expected_w = static_cast<size_t>(layer.get_out_channels()) * 
-                            layer.get_in_channels() * 
-                            layer.get_kernel_size() * layer.get_kernel_size();
-        int expected_b = layer.get_out_channels();
+        int in_c = 0, out_c = 0, k = 0;
+        in.read(reinterpret_cast<char*>(&in_c), sizeof(int));
+        in.read(reinterpret_cast<char*>(&out_c), sizeof(int));
+        in.read(reinterpret_cast<char*>(&k), sizeof(int));
+        
+        if (in_c != layer.get_in_channels() || out_c != layer.get_out_channels() || 
+            k != layer.get_kernel_size()) {
+            std::cerr << "Layer shape mismatch: expected (" << layer.get_in_channels() 
+                      << "," << layer.get_out_channels() << "," << layer.get_kernel_size()
+                      << "), got (" << in_c << "," << out_c << "," << k << ")" << std::endl;
+            return false;
+        }
+        
+        size_t expected_w = static_cast<size_t>(out_c) * in_c * k * k;
+        int expected_b = out_c;
 
         int w_size = 0, b_size = 0;
         in.read(reinterpret_cast<char*>(&w_size), sizeof(int));

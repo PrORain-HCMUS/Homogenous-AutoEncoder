@@ -381,12 +381,16 @@ void GPUReLULayer::forward(const GPUTensor4D& input, GPUTensor4D& output) const 
         output.allocate(input.n, input.c, input.h, input.w);
     }
     
+#ifdef USE_OPTIMIZED_KERNELS
+    gpu_relu_forward_opt(input, output);
+#else
     size_t total = input.size();
     int block_size = 256;
     int grid_size = (total + block_size - 1) / block_size;
     
     relu_forward_kernel<<<grid_size, block_size>>>(input.d_data, output.d_data, total);
     CUDA_CHECK(cudaGetLastError());
+#endif
 }
 
 void GPUReLULayer::backward(const GPUTensor4D& input, const GPUTensor4D& grad_output,
@@ -396,6 +400,9 @@ void GPUReLULayer::backward(const GPUTensor4D& input, const GPUTensor4D& grad_ou
         grad_input.allocate(input.n, input.c, input.h, input.w);
     }
     
+#ifdef USE_OPTIMIZED_KERNELS
+    gpu_relu_backward_opt(input, grad_output, grad_input);
+#else
     size_t total = input.size();
     int block_size = 256;
     int grid_size = (total + block_size - 1) / block_size;
@@ -403,6 +410,7 @@ void GPUReLULayer::backward(const GPUTensor4D& input, const GPUTensor4D& grad_ou
     relu_backward_kernel<<<grid_size, block_size>>>(input.d_data, grad_output.d_data, 
                                                      grad_input.d_data, total);
     CUDA_CHECK(cudaGetLastError());
+#endif
 }
 
 __global__ void maxpool2d_forward_kernel(
@@ -511,6 +519,9 @@ void GPUMaxPool2DLayer::forward(const GPUTensor4D& input, GPUTensor4D& output) c
         output.allocate(input.n, input.c, out_h, out_w);
     }
     
+#ifdef USE_OPTIMIZED_KERNELS
+    gpu_maxpool2d_forward_opt(input, output, k_, stride_);
+#else
     dim3 block(16, 16);
     dim3 grid(
         (out_w + block.x - 1) / block.x,
@@ -524,6 +535,7 @@ void GPUMaxPool2DLayer::forward(const GPUTensor4D& input, GPUTensor4D& output) c
         out_h, out_w, k_, stride_
     );
     CUDA_CHECK(cudaGetLastError());
+#endif
 }
 
 void GPUMaxPool2DLayer::backward(const GPUTensor4D& input, const GPUTensor4D& grad_output,
@@ -602,6 +614,9 @@ void GPUUpSample2DLayer::forward(const GPUTensor4D& input, GPUTensor4D& output) 
         output.allocate(input.n, input.c, out_h, out_w);
     }
     
+#ifdef USE_OPTIMIZED_KERNELS
+    gpu_upsample2d_forward_opt(input, output, scale_);
+#else
     dim3 block(16, 16);
     dim3 grid(
         (out_w + block.x - 1) / block.x,
@@ -615,6 +630,7 @@ void GPUUpSample2DLayer::forward(const GPUTensor4D& input, GPUTensor4D& output) 
         out_h, out_w, scale_
     );
     CUDA_CHECK(cudaGetLastError());
+#endif
 }
 
 void GPUUpSample2DLayer::backward(const GPUTensor4D& input, const GPUTensor4D& grad_output,
@@ -629,7 +645,6 @@ void GPUUpSample2DLayer::backward(const GPUTensor4D& input, const GPUTensor4D& g
     int out_h = grad_output.h;
     int out_w = grad_output.w;
     
-    // Use 2D thread blocks
     dim3 block(16, 16);
     dim3 grid(
         (out_w + block.x - 1) / block.x,

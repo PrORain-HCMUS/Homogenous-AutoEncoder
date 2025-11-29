@@ -47,7 +47,7 @@ private:
     GPUTensor4D x0_, x1_, x2_, x3_, x4_, x5_, x6_;
     GPUTensor4D x7_, x8_, x9_, x10_, x11_, x12_, x13_;
     
-    GPUTensor4D g1_, g2_, g3_, g4_, g5_, g6_;
+    GPUTensor4D g0_, g1_, g2_, g3_, g4_, g5_, g6_;
     GPUTensor4D g7_, g8_, g9_, g10_, g11_, g12_, g13_;
 
     void copy_input(const GPUTensor4D& input);

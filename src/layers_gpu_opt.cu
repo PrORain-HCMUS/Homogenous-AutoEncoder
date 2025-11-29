@@ -1,3 +1,5 @@
+#ifdef USE_OPTIMIZED_KERNELS
+
 #include "gpu_layer.h"
 #include "cuda_utils.h"
 
@@ -5,6 +7,8 @@
 #include <device_launch_parameters.h>
 
 #include <cstdio>
+
+__global__ void gpu_relu_forward_kernel(const float* input, float* output, size_t n);
 
 #define TILE_WIDTH 16
 #define TILE_HEIGHT 16
@@ -247,12 +251,9 @@ __global__ void mse_loss_grad_fused_kernel(
     }
 }
 
-// ============================================================================
-// ============================================================================
-
 void gpu_relu_forward_opt(const GPUTensor4D& input, GPUTensor4D& output) {
     size_t n = input.size();
-    size_t n4 = n / 4;  // Number of float4 elements
+    size_t n4 = n / 4;
     
     if (output.n != input.n || output.c != input.c ||
         output.h != input.h || output.w != input.w) {
@@ -268,7 +269,9 @@ void gpu_relu_forward_opt(const GPUTensor4D& input, GPUTensor4D& output) {
             n4
         );
     } else {
-        // (would call the original kernel here)
+        int block_size = 256;
+        int grid_size = (n + block_size - 1) / block_size;
+        gpu_relu_forward_kernel<<<grid_size, block_size>>>(input.d_data, output.d_data, n);
     }
     CUDA_CHECK(cudaGetLastError());
 }
@@ -407,3 +410,5 @@ void gpu_conv2d_forward_tiled(
     );
     CUDA_CHECK(cudaGetLastError());
 }
+
+#endif  // USE_OPTIMIZED_KERNELS
