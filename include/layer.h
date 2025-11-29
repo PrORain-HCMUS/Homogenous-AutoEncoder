@@ -50,8 +50,8 @@ private:
     int k_;
     int stride_;
     int padding_;
-    std::vector<float> weights_;  // [out_c, in_c, k, k]
-    std::vector<float> bias_;     // [out_c]
+    std::vector<float> weights_;
+    std::vector<float> bias_;
 };
 
 class ReLULayer {

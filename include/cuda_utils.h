@@ -1,8 +1,6 @@
 #ifndef CUDA_UTILS_H
 #define CUDA_UTILS_H
 
-// Simple CUDA error-checking macro placeholder for future GPU phases.
-
 #ifdef __CUDACC__
 #include <cuda_runtime.h>
 #include <iostream>

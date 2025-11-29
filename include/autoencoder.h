@@ -21,7 +21,6 @@ public:
     bool load_weights(const std::string &path);
 
 private:
-    // Encoder
     Conv2DLayer conv1_;
     ReLULayer relu1_;
     MaxPool2DLayer pool1_;
@@ -30,7 +29,6 @@ private:
     ReLULayer relu2_;
     MaxPool2DLayer pool2_;
 
-    // Decoder
     Conv2DLayer conv3_;
     ReLULayer relu3_;
     UpSample2DLayer up1_;

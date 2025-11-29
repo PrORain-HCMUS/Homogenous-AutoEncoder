@@ -5,8 +5,8 @@
 #include <vector>
 
 struct CifarBatch {
-    std::vector<float> images;  // size: num_images * 3 * 32 * 32
-    std::vector<int> labels;    // size: num_images
+    std::vector<float> images;
+    std::vector<int> labels;
     int num_images = 0;
 };
 

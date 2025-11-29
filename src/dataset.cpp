@@ -4,7 +4,7 @@
 #include <stdexcept>
 
 namespace {
-constexpr int RECORD_BYTES = 1 + CIFAR10Dataset::IMAGE_SIZE;  // 1 label byte + 3072 image bytes
+constexpr int RECORD_BYTES = 1 + CIFAR10Dataset::IMAGE_SIZE;
 
 CifarBatch load_cifar10_batch_impl(const std::string &file_path) {
     std::ifstream file(file_path, std::ios::binary | std::ios::ate);
@@ -37,7 +37,7 @@ CifarBatch load_cifar10_batch_impl(const std::string &file_path) {
         const unsigned char *pixels = record + 1;
         for (int j = 0; j < CIFAR10Dataset::IMAGE_SIZE; ++j) {
             batch.images[static_cast<size_t>(i) * CIFAR10Dataset::IMAGE_SIZE + j] =
-                static_cast<float>(pixels[j]) / 255.0f;  // normalize to [0,1]
+                static_cast<float>(pixels[j]) / 255.0f;
         }
     }
 
@@ -67,14 +67,12 @@ CifarBatch CIFAR10Dataset::load_batch(const std::string &file_path) {
 }
 
 CIFAR10Dataset::CIFAR10Dataset(const std::string &data_dir) {
-    // Training batches: data_batch_1.bin ... data_batch_5.bin
     for (int i = 1; i <= 5; ++i) {
         std::string path = data_dir + "/data_batch_" + std::to_string(i) + ".bin";
         CifarBatch batch = load_cifar10_batch_impl(path);
         append_batch(train_, batch);
     }
 
-    // Test batch: test_batch.bin
     std::string test_path = data_dir + "/test_batch.bin";
     test_ = load_cifar10_batch_impl(test_path);
 }
