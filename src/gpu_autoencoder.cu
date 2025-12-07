@@ -60,6 +60,50 @@ void GPUAutoencoder::encode(const GPUTensor4D& input, GPUTensor4D& latent) {
 
 float GPUAutoencoder::train_step(const GPUTensor4D& input, const GPUTensor4D& target, 
                                   float learning_rate) {
+#ifdef USE_OPTIMIZED_KERNELS
+    // ========== OPTIMIZED FORWARD PASS (Phase 3) ==========
+    // Use tiled shared-memory Conv2D for all 5 conv layers
+    // Backward reuses the same naive kernels as Phase 2 (stable & simple)
+
+    // Encoder
+    gpu_conv2d_forward_opt(input, conv1_, x1_);
+    relu1_.forward(x1_, x2_);
+    pool1_.forward(x2_, x3_);
+
+    gpu_conv2d_forward_opt(x3_, conv2_, x4_);
+    relu2_.forward(x4_, x5_);
+    pool2_.forward(x5_, x6_);
+
+    // Decoder
+    gpu_conv2d_forward_opt(x6_, conv3_, x7_);
+    relu3_.forward(x7_, x8_);
+    up1_.forward(x8_, x9_);
+
+    gpu_conv2d_forward_opt(x9_, conv4_, x10_);
+    relu4_.forward(x10_, x11_);
+    up2_.forward(x11_, x12_);
+
+    gpu_conv2d_forward_opt(x12_, conv5_, x13_);
+
+    float loss = gpu_mse_loss_with_grad(x13_, target, g13_);
+
+    // ========== BACKWARD PASS (same as Phase 2) ==========
+    conv5_.backward(x12_, g13_, g12_, learning_rate);
+    up2_.backward(x11_, g12_, g11_);
+    relu4_.backward(x10_, g11_, g10_);
+    conv4_.backward(x9_, g10_, g9_, learning_rate);
+    up1_.backward(x8_, g9_, g8_);
+    relu3_.backward(x7_, g8_, g7_);
+    conv3_.backward(x6_, g7_, g6_, learning_rate);
+    pool2_.backward(x5_, g6_, g5_);
+    relu2_.backward(x4_, g5_, g4_);
+    conv2_.backward(x3_, g4_, g3_, learning_rate);
+    pool1_.backward(x2_, g3_, g2_);
+    relu1_.backward(x1_, g2_, g1_);
+    conv1_.backward(input, g1_, g0_, learning_rate);
+
+#else
+    // ========== NAIVE FORWARD PASS ==========
     conv1_.forward(input, x1_);
     relu1_.forward(x1_, x2_);
     pool1_.forward(x2_, x3_);
@@ -80,6 +124,7 @@ float GPUAutoencoder::train_step(const GPUTensor4D& input, const GPUTensor4D& ta
 
     float loss = gpu_mse_loss_with_grad(x13_, target, g13_);
 
+    // ========== NAIVE BACKWARD PASS ==========
     conv5_.backward(x12_, g13_, g12_, learning_rate);
     up2_.backward(x11_, g12_, g11_);
     relu4_.backward(x10_, g11_, g10_);
@@ -93,6 +138,7 @@ float GPUAutoencoder::train_step(const GPUTensor4D& input, const GPUTensor4D& ta
     pool1_.backward(x2_, g3_, g2_);
     relu1_.backward(x1_, g2_, g1_);
     conv1_.backward(input, g1_, g0_, learning_rate);
+#endif
 
     return loss;
 }
