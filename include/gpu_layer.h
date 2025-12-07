@@ -39,6 +39,13 @@ public:
     void backward(const GPUTensor4D& input, const GPUTensor4D& grad_output,
                   GPUTensor4D& grad_input, float learning_rate);
 
+    // Expose weights for optimized kernels
+    float* get_weights() const { return d_weights_; }
+    float* get_bias() const { return d_bias_; }
+    float* get_grad_weights() const { return d_grad_weights_; }
+    float* get_grad_bias() const { return d_grad_bias_; }
+    size_t get_weights_size() const { return weights_size_; }
+
     void copy_weights_from_host(const float* h_weights, const float* h_bias);
     void copy_weights_to_host(float* h_weights, float* h_bias) const;
 
@@ -113,6 +120,39 @@ void gpu_conv2d_forward_tiled(const GPUTensor4D& input, const float* d_weights,
 void gpu_conv2d_relu_forward_opt(const GPUTensor4D& input, const float* d_weights,
                                  const float* d_bias, GPUTensor4D& output,
                                  int in_c, int out_c, int k, int stride, int padding);
+
+// Fused Conv+ReLU forward pass - skips ReLU layer entirely
+void gpu_conv2d_relu_fused_forward(const GPUTensor4D& input, 
+                                    const GPUConv2DLayer& conv,
+                                    GPUTensor4D& output);
+
+// Optimized conv forward using tiled shared memory
+void gpu_conv2d_forward_opt(const GPUTensor4D& input,
+                            const GPUConv2DLayer& conv,
+                            GPUTensor4D& output);
+
+// Optimized backward pass with parallel reduction
+void gpu_conv2d_backward_opt(
+    const GPUTensor4D& input,
+    const GPUTensor4D& grad_output,
+    const float* d_weights,
+    float* d_grad_weights,
+    float* d_grad_bias,
+    GPUTensor4D& grad_input,
+    int in_c, int out_c, int k, int stride, int padding
+);
+
+// Optimized SGD update with vectorized access
+void gpu_sgd_update_opt(float* params, const float* grads, float lr, size_t n);
+
+// Full optimized backward for conv layer (includes weight update)
+void gpu_conv2d_backward_full_opt(
+    const GPUTensor4D& input,
+    const GPUTensor4D& grad_output,
+    GPUTensor4D& grad_input,
+    const GPUConv2DLayer& conv,
+    float learning_rate
+);
 #endif
 
 #endif  // GPU_LAYER_H
