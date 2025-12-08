@@ -61,46 +61,63 @@ void GPUAutoencoder::encode(const GPUTensor4D& input, GPUTensor4D& latent) {
 float GPUAutoencoder::train_step(const GPUTensor4D& input, const GPUTensor4D& target, 
                                   float learning_rate) {
 #ifdef USE_OPTIMIZED_KERNELS
-    // ========== OPTIMIZED FORWARD PASS (Phase 3) ==========
-    // Use tiled shared-memory Conv2D for all 5 conv layers
-    // Backward reuses the same naive kernels as Phase 2 (stable & simple)
-
+    // ========== FORWARD PASS - Use cuDNN (NVIDIA optimized) ==========
+    
     // Encoder
-    gpu_conv2d_forward_opt(input, conv1_, x1_);
+    gpu_conv2d_forward_cudnn_wrapper(input, conv1_, x1_);
     relu1_.forward(x1_, x2_);
     pool1_.forward(x2_, x3_);
 
-    gpu_conv2d_forward_opt(x3_, conv2_, x4_);
+    gpu_conv2d_forward_cudnn_wrapper(x3_, conv2_, x4_);
     relu2_.forward(x4_, x5_);
     pool2_.forward(x5_, x6_);
 
     // Decoder
-    gpu_conv2d_forward_opt(x6_, conv3_, x7_);
+    gpu_conv2d_forward_cudnn_wrapper(x6_, conv3_, x7_);
     relu3_.forward(x7_, x8_);
     up1_.forward(x8_, x9_);
 
-    gpu_conv2d_forward_opt(x9_, conv4_, x10_);
+    gpu_conv2d_forward_cudnn_wrapper(x9_, conv4_, x10_);
     relu4_.forward(x10_, x11_);
     up2_.forward(x11_, x12_);
 
-    gpu_conv2d_forward_opt(x12_, conv5_, x13_);
+    // Final conv (no activation)
+    gpu_conv2d_forward_cudnn_wrapper(x12_, conv5_, x13_);
 
     float loss = gpu_mse_loss_with_grad(x13_, target, g13_);
 
-    // ========== BACKWARD PASS (same as Phase 2) ==========
-    conv5_.backward(x12_, g13_, g12_, learning_rate);
+    // ========== BACKWARD PASS - Use cuDNN ==========
+    
+    // Conv5 backward (no ReLU)
+    gpu_conv2d_backward_cudnn_full(x12_, g13_, g12_, conv5_, learning_rate);
+    
+    // Up2 backward
     up2_.backward(x11_, g12_, g11_);
+    
+    // Conv4+ReLU backward
     relu4_.backward(x10_, g11_, g10_);
-    conv4_.backward(x9_, g10_, g9_, learning_rate);
+    gpu_conv2d_backward_cudnn_full(x9_, g10_, g9_, conv4_, learning_rate);
+    
+    // Up1 backward
     up1_.backward(x8_, g9_, g8_);
+    
+    // Conv3+ReLU backward
     relu3_.backward(x7_, g8_, g7_);
-    conv3_.backward(x6_, g7_, g6_, learning_rate);
+    gpu_conv2d_backward_cudnn_full(x6_, g7_, g6_, conv3_, learning_rate);
+    
+    // Pool2 backward
     pool2_.backward(x5_, g6_, g5_);
+    
+    // Conv2+ReLU backward
     relu2_.backward(x4_, g5_, g4_);
-    conv2_.backward(x3_, g4_, g3_, learning_rate);
+    gpu_conv2d_backward_cudnn_full(x3_, g4_, g3_, conv2_, learning_rate);
+    
+    // Pool1 backward
     pool1_.backward(x2_, g3_, g2_);
+    
+    // Conv1+ReLU backward
     relu1_.backward(x1_, g2_, g1_);
-    conv1_.backward(input, g1_, g0_, learning_rate);
+    gpu_conv2d_backward_cudnn_full(input, g1_, g0_, conv1_, learning_rate);
 
 #else
     // ========== NAIVE FORWARD PASS ==========

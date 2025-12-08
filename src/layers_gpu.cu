@@ -3,16 +3,28 @@
 
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
+#include <curand_kernel.h>
 
 #include <cstdio>
 #include <cmath>
 #include <cfloat>
 #include <vector>
+#include <random>
 
 __global__ void fill_zero_kernel(float* data, size_t n) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) {
         data[idx] = 0.0f;
+    }
+}
+
+// Kernel for He initialization (for ReLU networks)
+__global__ void he_init_kernel(float* data, size_t n, float std_dev, unsigned long long seed) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        curandState state;
+        curand_init(seed, idx, 0, &state);
+        data[idx] = curand_normal(&state) * std_dev;
     }
 }
 
@@ -267,7 +279,20 @@ GPUConv2DLayer::GPUConv2DLayer(int in_channels, int out_channels, int kernel_siz
     CUDA_CHECK(cudaMalloc(&d_grad_weights_, weights_size_ * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_grad_bias_, out_c_ * sizeof(float)));
     
-    CUDA_CHECK(cudaMemset(d_weights_, 0, weights_size_ * sizeof(float)));
+    // He initialization for weights: std = sqrt(2 / fan_in)
+    // fan_in = in_channels * kernel_size * kernel_size
+    int fan_in = in_c_ * k_ * k_;
+    float std_dev = sqrtf(2.0f / static_cast<float>(fan_in));
+    
+    int block_size = 256;
+    int grid_size = (weights_size_ + block_size - 1) / block_size;
+    
+    // Use random seed based on layer parameters for reproducibility
+    unsigned long long seed = static_cast<unsigned long long>(in_c_ * 1000 + out_c_ * 100 + k_);
+    he_init_kernel<<<grid_size, block_size>>>(d_weights_, weights_size_, std_dev, seed);
+    CUDA_CHECK(cudaGetLastError());
+    
+    // Initialize bias to zero (standard practice)
     CUDA_CHECK(cudaMemset(d_bias_, 0, out_c_ * sizeof(float)));
 }
 

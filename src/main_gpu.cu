@@ -275,7 +275,7 @@ void print_gpu_info(int device_count) {
 int main(int argc, char** argv) {
     std::string data_dir = "data";
     int epochs = 20;
-    int batch_size = 32;
+    int batch_size = 64;  // Default batch size
     float learning_rate = 1e-3f;
     std::string csv_path = "gpu_phase2_log.csv";
     std::string txt_path = "gpu_phase2_log.txt";
@@ -411,14 +411,26 @@ int main(int argc, char** argv) {
     }
     std::mt19937 rng(42);
 
-    GPUTensor4D gpu_batch(batch_size, 3, 32, 32);
+    // Double buffering with CUDA streams for overlapping transfer and compute
+    GPUTensor4D gpu_batch[2];
+    gpu_batch[0].allocate(batch_size, 3, 32, 32);
+    gpu_batch[1].allocate(batch_size, 3, 32, 32);
     GPUTensor4D gpu_output;
 
     const size_t h_batch_size = static_cast<size_t>(batch_size) * 3 * 32 * 32;
-    float* h_batch = nullptr;
-    CUDA_CHECK(cudaMallocHost(&h_batch, h_batch_size * sizeof(float)));
+    
+    // Allocate two pinned host buffers for double buffering
+    float* h_batch[2];
+    CUDA_CHECK(cudaMallocHost(&h_batch[0], h_batch_size * sizeof(float)));
+    CUDA_CHECK(cudaMallocHost(&h_batch[1], h_batch_size * sizeof(float)));
+    
+    // Create CUDA streams for overlapping
+    cudaStream_t streams[2];
+    CUDA_CHECK(cudaStreamCreate(&streams[0]));
+    CUDA_CHECK(cudaStreamCreate(&streams[1]));
 
     std::cout << "\n=== Starting Training ===" << std::endl;
+    std::cout << "Using double-buffered CUDA streams for overlapped transfer/compute" << std::endl;
     std::cout << "Epochs: " << epochs << ", LR: " << learning_rate << std::endl;
     std::cout << std::endl;
     
@@ -438,19 +450,39 @@ int main(int argc, char** argv) {
         float epoch_loss = 0.0f;
         auto epoch_start = std::chrono::high_resolution_clock::now();
 
+        // Prepare first batch
+        for (int b = 0; b < batch_size; ++b) {
+            int img_idx = indices[b];
+            const float* src = train.images.data() + static_cast<size_t>(img_idx) * 3 * 32 * 32;
+            float* dst = h_batch[0] + static_cast<size_t>(b) * 3 * 32 * 32;
+            std::copy(src, src + 3 * 32 * 32, dst);
+        }
+        
         for (int batch = 0; batch < num_batches; ++batch) {
             auto batch_start = std::chrono::high_resolution_clock::now();
-
-            for (int b = 0; b < batch_size; ++b) {
-                int img_idx = indices[batch * batch_size + b];
-                const float* src = train.images.data() + static_cast<size_t>(img_idx) * 3 * 32 * 32;
-                float* dst = h_batch + static_cast<size_t>(b) * 3 * 32 * 32;
-                std::copy(src, src + 3 * 32 * 32, dst);
+            
+            int curr_buf = batch % 2;
+            int next_buf = (batch + 1) % 2;
+            
+            // Async copy current batch to GPU
+            CUDA_CHECK(cudaMemcpyAsync(gpu_batch[curr_buf].d_data, h_batch[curr_buf], 
+                                       h_batch_size * sizeof(float), 
+                                       cudaMemcpyHostToDevice, streams[curr_buf]));
+            
+            // Prepare next batch on CPU while GPU is working (if not last batch)
+            if (batch + 1 < num_batches) {
+                for (int b = 0; b < batch_size; ++b) {
+                    int img_idx = indices[(batch + 1) * batch_size + b];
+                    const float* src = train.images.data() + static_cast<size_t>(img_idx) * 3 * 32 * 32;
+                    float* dst = h_batch[next_buf] + static_cast<size_t>(b) * 3 * 32 * 32;
+                    std::copy(src, src + 3 * 32 * 32, dst);
+                }
             }
+            
+            // Wait for transfer to complete before training
+            CUDA_CHECK(cudaStreamSynchronize(streams[curr_buf]));
 
-            gpu_batch.copy_from_host(h_batch);
-
-            float loss = autoencoder.train_step(gpu_batch, gpu_batch, learning_rate);
+            float loss = autoencoder.train_step(gpu_batch[curr_buf], gpu_batch[curr_buf], learning_rate);
             epoch_loss += loss;
 
             auto batch_end = std::chrono::high_resolution_clock::now();
@@ -580,7 +612,15 @@ int main(int argc, char** argv) {
     logger.log_svm_results(accuracy, effective_train, test.num_images, feature_dim);
 #endif
 
-    CUDA_CHECK(cudaFreeHost(h_batch));
+    // Cleanup double buffers and streams
+    CUDA_CHECK(cudaFreeHost(h_batch[0]));
+    CUDA_CHECK(cudaFreeHost(h_batch[1]));
+    CUDA_CHECK(cudaStreamDestroy(streams[0]));
+    CUDA_CHECK(cudaStreamDestroy(streams[1]));
+    
+#ifdef USE_OPTIMIZED_KERNELS
+    cleanup_gpu_opt_buffers();
+#endif
 
     CUDA_CHECK(cudaDeviceReset());
 
