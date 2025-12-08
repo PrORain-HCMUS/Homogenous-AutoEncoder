@@ -49,6 +49,16 @@ void GPUAutoencoder::forward(const GPUTensor4D& input, GPUTensor4D& output) {
 }
 
 void GPUAutoencoder::encode(const GPUTensor4D& input, GPUTensor4D& latent) {
+#ifdef USE_OPTIMIZED_KERNELS
+    // Use cuDNN for fast feature extraction
+    gpu_conv2d_forward_cudnn_wrapper(input, conv1_, x1_);
+    relu1_.forward(x1_, x2_);
+    pool1_.forward(x2_, x3_);
+
+    gpu_conv2d_forward_cudnn_wrapper(x3_, conv2_, x4_);
+    relu2_.forward(x4_, x5_);
+    pool2_.forward(x5_, latent);
+#else
     conv1_.forward(input, x1_);
     relu1_.forward(x1_, x2_);
     pool1_.forward(x2_, x3_);
@@ -56,6 +66,7 @@ void GPUAutoencoder::encode(const GPUTensor4D& input, GPUTensor4D& latent) {
     conv2_.forward(x3_, x4_);
     relu2_.forward(x4_, x5_);
     pool2_.forward(x5_, latent);
+#endif
 }
 
 float GPUAutoencoder::train_step(const GPUTensor4D& input, const GPUTensor4D& target, 
