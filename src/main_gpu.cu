@@ -26,16 +26,16 @@
 // For 20 epochs: milestones at epoch 10, 15
 // ============================================================
 float get_scheduled_lr(float base_lr, int epoch, int total_epochs) {
-    // MultiStepLR with milestones at 50% and 75% of total epochs
-    int milestone1 = total_epochs / 2;      // epoch 10 for 20 epochs
-    int milestone2 = total_epochs * 3 / 4;  // epoch 15 for 20 epochs
-    
-    if (epoch >= milestone2) {
-        return base_lr * 0.01f;  // 0.00001 for base_lr=0.001
-    } else if (epoch >= milestone1) {
-        return base_lr * 0.1f;   // 0.0001 for base_lr=0.001
-    }
+    // LR Schedule DISABLED - return constant learning rate
+    // This produces better features for downstream SVM classification
     return base_lr;
+    
+    // Original MultiStepLR (disabled):
+    // int milestone1 = total_epochs / 2;      // epoch 10 for 20 epochs
+    // int milestone2 = total_epochs * 3 / 4;  // epoch 15 for 20 epochs
+    // if (epoch >= milestone2) return base_lr * 0.01f;
+    // else if (epoch >= milestone1) return base_lr * 0.1f;
+    // return base_lr;
 }
 
 std::string get_timestamp_gpu() {
@@ -368,10 +368,12 @@ int main(int argc, char** argv) {
     
     GPUTrainingLogger logger(txt_path, csv_path);
     // Optimizer configuration
+    // NOTE: Momentum and Weight Decay DISABLED for better SVM features
+    // Plain SGD produces features that generalize better for classification
     OptimizerConfig opt_config;
-    opt_config.momentum = 0.9f;
-    opt_config.weight_decay = 1e-4f;
-    opt_config.use_momentum = true;
+    opt_config.momentum = 0.0f;        // DISABLED (was 0.9f)
+    opt_config.weight_decay = 0.0f;    // DISABLED (was 1e-4f)
+    opt_config.use_momentum = false;   // DISABLED (was true)
     
     // Data augmentation configuration
     // NOTE: Disabled for now - testing Momentum SGD + Weight Decay + LR Schedule only
