@@ -41,93 +41,132 @@ void Conv2D::init_weights() {
 }
 
 void Conv2D::forward(const std::vector<float>& input, std::vector<float>& output) {
-    this->input_cache = input; // Lưu input cho backward
-    output.assign(output.size(), 0.0f); // Reset output
+    this->input_cache = input; 
+    std::fill(output.begin(), output.end(), 0.0f);
 
-    int H_in = input_shape.height;
-    int W_in = input_shape.width;
-    int H_out = output_shape.height;
-    int W_out = output_shape.width;
+    const int H_in = input_shape.height;
+    const int W_in = input_shape.width;
+    const int H_out = output_shape.height;
+    const int W_out = output_shape.width;
 
-    // Convolution Logic (Naive implementation)
-    for (int oc = 0; oc < out_channels; ++oc) {
+    const int IC = in_channels;
+    const int OC = out_channels;
+    const int K = k_size;
+
+    const float* in_ptr = input.data();
+    const float* w_ptr = weights.data();
+    float* out_ptr = output.data();
+
+    const int in_hw = H_in * W_in;
+    const int out_hw = H_out * W_out;
+    const int k_hw = K * K;
+    const int oc_stride = IC * k_hw;
+
+    for (int oc = 0; oc < OC; ++oc) {
+        float* out_oc = out_ptr + oc * out_hw;
+        const float* w_oc = w_ptr + oc * oc_stride;
+        const float b = biases[oc];
+
         for (int oh = 0; oh < H_out; ++oh) {
+            const int ih_base = oh * stride - padding;
             for (int ow = 0; ow < W_out; ++ow) {
-                float sum = 0.0f;
-                
-                // Duyệt qua input channels
-                for (int ic = 0; ic < in_channels; ++ic) {
-                    // Duyệt qua kernel
-                    for (int kh = 0; kh < k_size; ++kh) {
-                        for (int kw = 0; kw < k_size; ++kw) {
-                            // Tính index trên input (có padding)
-                            int ih = oh * stride - padding + kh;
-                            int iw = ow * stride - padding + kw;
 
-                            if (ih >= 0 && ih < H_in && iw >= 0 && iw < W_in) {
-                                int input_idx = get_idx(ic, ih, iw, H_in, W_in);
-                                // Weight index: oc -> ic -> kh -> kw
-                                int weight_idx = oc * (in_channels * k_size * k_size) 
-                                               + ic * (k_size * k_size) 
-                                               + kh * k_size + kw;
-                                sum += input[input_idx] * weights[weight_idx];
-                            }
+                const int iw_base = ow * stride - padding;
+                float sum = 0.0f;
+
+                for (int ic = 0; ic < IC; ++ic) {
+                    const float* w_ic = w_oc + ic * k_hw;
+
+                    for (int kh = 0; kh < K; ++kh) {
+                        int ih = ih_base + kh;
+                        if (ih < 0 || ih >= H_in) continue;
+
+                        const int in_row = ih * W_in;
+
+                        for (int kw = 0; kw < K; ++kw) {
+                            int iw = iw_base + kw;
+                            if (iw < 0 || iw >= W_in) continue;
+
+                            const float v = in_ptr[ic * in_hw + in_row + iw];
+                            sum += v * w_ic[kh * K + kw];
                         }
                     }
                 }
-                // Cộng bias
-                output[get_idx(oc, oh, ow, H_out, W_out)] = sum + biases[oc];
+                out_oc[oh * W_out + ow] = sum + b;
             }
         }
     }
 }
 
-void Conv2D::backward(const std::vector<float>& grad_output, std::vector<float>& grad_input, float learning_rate) {
-    // Reset grad_input
-    grad_input.assign(grad_input.size(), 0.0f);
+void Conv2D::backward(const std::vector<float>& grad_output,
+                      std::vector<float>& grad_input, float lr)
+{
+    std::fill(grad_input.begin(), grad_input.end(), 0.0f);
 
-    int H_in = input_shape.height;
-    int W_in = input_shape.width;
-    int H_out = output_shape.height;
-    int W_out = output_shape.width;
+    const int H_in = input_shape.height;
+    const int W_in = input_shape.width;
+    const int H_out = output_shape.height;
+    const int W_out = output_shape.width;
 
-    // Gradient w.r.t Weights & Input
-    for (int oc = 0; oc < out_channels; ++oc) {
+    const int IC = in_channels;
+    const int OC = out_channels;
+    const int K = k_size;
+
+    const float* go_ptr = grad_output.data();
+    const float* in_ptr = input_cache.data();
+    float* gi_ptr = grad_input.data();
+    float* w_ptr = weights.data();
+    float* b_ptr = biases.data();
+
+    const int in_hw = H_in * W_in;
+    const int out_hw = H_out * W_out;
+    const int k_hw = K * K;
+    const int oc_stride = IC * k_hw;
+
+    for (int oc = 0; oc < OC; ++oc) {
+        const float* go_oc = go_ptr + oc * out_hw;
+        float* w_oc = w_ptr + oc * oc_stride;
+
+        float grad_bias = 0.0f;
+
         for (int oh = 0; oh < H_out; ++oh) {
+            const int ih_base = oh * stride - padding;
+
             for (int ow = 0; ow < W_out; ++ow) {
-                // Lấy gradient từ lớp sau
-                float grad_val = grad_output[get_idx(oc, oh, ow, H_out, W_out)];
-                
-                // Gradient w.r.t Bias
-                biases[oc] -= learning_rate * grad_val; 
+                float go_val = go_oc[oh * W_out + ow];
+                grad_bias += go_val;
 
-                for (int ic = 0; ic < in_channels; ++ic) {
-                    for (int kh = 0; kh < k_size; ++kh) {
-                        for (int kw = 0; kw < k_size; ++kw) {
-                            int ih = oh * stride - padding + kh;
-                            int iw = ow * stride - padding + kw;
+                const int iw_base = ow * stride - padding;
 
-                            if (ih >= 0 && ih < H_in && iw >= 0 && iw < W_in) {
-                                int input_idx = get_idx(ic, ih, iw, H_in, W_in);
-                                int weight_idx = oc * (in_channels * k_size * k_size) 
-                                               + ic * (k_size * k_size) 
-                                               + kh * k_size + kw;
+                for (int ic = 0; ic < IC; ++ic) {
+                    float* w_ic = w_oc + ic * k_hw;
+                    const float* in_ic = in_ptr + ic * in_hw;
 
-                                // 1. Tích lũy Gradient cho Input (để truyền về lớp trước)
-                                // dL/dx += dL/dy * w
-                                grad_input[input_idx] += grad_val * weights[weight_idx];
+                    for (int kh = 0; kh < K; ++kh) {
+                        int ih = ih_base + kh;
+                        if (ih < 0 || ih >= H_in) continue;
 
-                                // 2. Cập nhật Weights (SGD)
-                                // dL/dw = dL/dy * x
-                                // w_new = w_old - lr * grad_weight
-                                float grad_weight = grad_val * input_cache[input_idx];
-                                weights[weight_idx] -= learning_rate * grad_weight;
-                            }
+                        const int in_row = ih * W_in;
+
+                        for (int kw = 0; kw < K; ++kw) {
+                            int iw = iw_base + kw;
+                            if (iw < 0 || iw >= W_in) continue;
+
+                            int idx = in_row + iw;
+
+                            float v = in_ic[idx];
+
+                            // Update weight
+                            w_ic[kh * K + kw] -= lr * go_val * v;
+
+                            // Accumulate grad_input
+                            gi_ptr[ic * in_hw + idx] += go_val * w_ic[kh * K + kw];
                         }
                     }
                 }
             }
         }
+        b_ptr[oc] -= lr * grad_bias;
     }
 }
 

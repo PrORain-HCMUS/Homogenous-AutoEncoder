@@ -23,7 +23,7 @@ public:
 
     void save_weights(const std::string& filepath);
 
-        // (Gợi ý: Bạn cũng nên khai báo sẵn hàm load để dùng cho Phase 4 sau này)
+    // (Gợi ý: Bạn cũng nên khai báo sẵn hàm load để dùng cho Phase 4 sau này)
     // void load_weights(const std::string& filepath);
 };
 
