@@ -19,6 +19,25 @@
 #include "svm_wrapper.h"
 #endif
 
+// ============================================================
+// LEARNING RATE SCHEDULE
+// ============================================================
+// MultiStepLR: Reduce LR at specified milestones
+// For 20 epochs: milestones at epoch 10, 15
+// ============================================================
+float get_scheduled_lr(float base_lr, int epoch, int total_epochs) {
+    // MultiStepLR with milestones at 50% and 75% of total epochs
+    int milestone1 = total_epochs / 2;      // epoch 10 for 20 epochs
+    int milestone2 = total_epochs * 3 / 4;  // epoch 15 for 20 epochs
+    
+    if (epoch >= milestone2) {
+        return base_lr * 0.01f;  // 0.00001 for base_lr=0.001
+    } else if (epoch >= milestone1) {
+        return base_lr * 0.1f;   // 0.0001 for base_lr=0.001
+    }
+    return base_lr;
+}
+
 std::string get_timestamp_gpu() {
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::system_clock::to_time_t(now);
@@ -348,6 +367,20 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaGetDeviceProperties(&prop, device_id));
     
     GPUTrainingLogger logger(txt_path, csv_path);
+    // Optimizer configuration
+    OptimizerConfig opt_config;
+    opt_config.momentum = 0.9f;
+    opt_config.weight_decay = 1e-4f;
+    opt_config.use_momentum = true;
+    
+    // Data augmentation configuration
+    // NOTE: Disabled for now - testing Momentum SGD + Weight Decay + LR Schedule only
+    // Augmentation may hurt autoencoder training (input != target after augment)
+    AugmentConfig aug_config;
+    aug_config.horizontal_flip = false;  // DISABLED
+    aug_config.random_crop = false;      // DISABLED
+    aug_config.crop_padding = 4;
+    
     logger.log_config(epochs, batch_size, learning_rate, data_dir, 
                       max_train_images, weights_load_path, weights_save_path);
     logger.log_gpu_info(prop.name, prop.major, prop.minor,
@@ -438,6 +471,17 @@ int main(int argc, char** argv) {
     logger.log(std::string(60, '='));
     logger.log("TRAINING STARTED");
     logger.log(std::string(60, '='));
+    logger.log("");
+    logger.log("OPTIMIZER SETTINGS:");
+    logger.log("  Momentum: " + std::to_string(opt_config.momentum));
+    logger.log("  Weight Decay: " + std::to_string(opt_config.weight_decay));
+    logger.log("  LR Schedule: MultiStepLR (milestones at 50%, 75% epochs)");
+    logger.log("");
+    logger.log("DATA AUGMENTATION:");
+    logger.log("  Horizontal Flip: " + std::string(aug_config.horizontal_flip ? "enabled" : "disabled"));
+    logger.log("  Random Crop: " + std::string(aug_config.random_crop ? "enabled" : "disabled"));
+    logger.log("  Crop Padding: " + std::to_string(aug_config.crop_padding));
+    logger.log("");
 
     auto total_start = std::chrono::high_resolution_clock::now();
     float best_loss = std::numeric_limits<float>::max();
@@ -446,17 +490,28 @@ int main(int argc, char** argv) {
     for (int epoch = 0; epoch < epochs; ++epoch) {
         std::shuffle(indices.begin(), indices.end(), rng);
         logger.log_epoch_start(epoch + 1, epochs);
+        
+        // Get scheduled learning rate for this epoch
+        float current_lr = get_scheduled_lr(learning_rate, epoch, epochs);
+        if (epoch == 0 || current_lr != get_scheduled_lr(learning_rate, epoch - 1, epochs)) {
+            // Reset cout format to show LR correctly (avoid truncation from previous setprecision)
+            std::cout << std::defaultfloat << std::setprecision(6);
+            std::cout << "  LR: " << current_lr << std::endl;
+            logger.log("  Learning rate: " + std::to_string(current_lr));
+        }
 
         float epoch_loss = 0.0f;
         auto epoch_start = std::chrono::high_resolution_clock::now();
 
-        // Prepare first batch
+        // Prepare first batch with augmentation
         for (int b = 0; b < batch_size; ++b) {
             int img_idx = indices[b];
             const float* src = train.images.data() + static_cast<size_t>(img_idx) * 3 * 32 * 32;
             float* dst = h_batch[0] + static_cast<size_t>(b) * 3 * 32 * 32;
             std::copy(src, src + 3 * 32 * 32, dst);
         }
+        // Apply augmentation to first batch
+        CIFAR10Dataset::augment_batch(h_batch[0], batch_size, aug_config, rng);
         
         for (int batch = 0; batch < num_batches; ++batch) {
             auto batch_start = std::chrono::high_resolution_clock::now();
@@ -477,12 +532,16 @@ int main(int argc, char** argv) {
                     float* dst = h_batch[next_buf] + static_cast<size_t>(b) * 3 * 32 * 32;
                     std::copy(src, src + 3 * 32 * 32, dst);
                 }
+                // Apply augmentation to next batch
+                CIFAR10Dataset::augment_batch(h_batch[next_buf], batch_size, aug_config, rng);
             }
             
             // Wait for transfer to complete before training
             CUDA_CHECK(cudaStreamSynchronize(streams[curr_buf]));
 
-            float loss = autoencoder.train_step(gpu_batch[curr_buf], gpu_batch[curr_buf], learning_rate);
+            // Train with Momentum SGD + Weight Decay + scheduled LR
+            float loss = autoencoder.train_step_momentum(gpu_batch[curr_buf], gpu_batch[curr_buf], 
+                                                          current_lr, opt_config);
             epoch_loss += loss;
 
             auto batch_end = std::chrono::high_resolution_clock::now();

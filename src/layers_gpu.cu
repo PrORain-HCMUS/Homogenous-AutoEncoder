@@ -267,6 +267,35 @@ __global__ void sgd_update_kernel(float* params, const float* grads, float lr, s
     }
 }
 
+// ============================================================
+// MOMENTUM SGD WITH WEIGHT DECAY
+// ============================================================
+// v = momentum * v + grad + weight_decay * params
+// params = params - lr * v
+// ============================================================
+__global__ void sgd_momentum_update_kernel(
+    float* params,           // Parameters to update
+    const float* grads,      // Gradients
+    float* velocity,         // Momentum buffer
+    float lr,                // Learning rate
+    float momentum,          // Momentum coefficient (typically 0.9)
+    float weight_decay,      // L2 regularization (typically 1e-4)
+    size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        // Compute gradient with weight decay (L2 regularization)
+        float grad_with_decay = grads[idx] + weight_decay * params[idx];
+        
+        // Update velocity: v = momentum * v + grad_with_decay
+        float v = momentum * velocity[idx] + grad_with_decay;
+        velocity[idx] = v;
+        
+        // Update parameters: params = params - lr * v
+        params[idx] -= lr * v;
+    }
+}
+
 GPUConv2DLayer::GPUConv2DLayer(int in_channels, int out_channels, int kernel_size,
                                int stride, int padding)
     : in_c_(in_channels), out_c_(out_channels), k_(kernel_size),
@@ -278,6 +307,12 @@ GPUConv2DLayer::GPUConv2DLayer(int in_channels, int out_channels, int kernel_siz
     CUDA_CHECK(cudaMalloc(&d_bias_, out_c_ * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_grad_weights_, weights_size_ * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_grad_bias_, out_c_ * sizeof(float)));
+    
+    // Allocate momentum buffers (velocity) - initialized to zero
+    CUDA_CHECK(cudaMalloc(&d_velocity_weights_, weights_size_ * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_velocity_bias_, out_c_ * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_velocity_weights_, 0, weights_size_ * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_velocity_bias_, 0, out_c_ * sizeof(float)));
     
     // He initialization for weights: std = sqrt(2 / fan_in)
     // fan_in = in_channels * kernel_size * kernel_size
@@ -301,6 +336,8 @@ GPUConv2DLayer::~GPUConv2DLayer() {
     if (d_bias_) cudaFree(d_bias_);
     if (d_grad_weights_) cudaFree(d_grad_weights_);
     if (d_grad_bias_) cudaFree(d_grad_bias_);
+    if (d_velocity_weights_) cudaFree(d_velocity_weights_);
+    if (d_velocity_bias_) cudaFree(d_velocity_bias_);
 }
 
 void GPUConv2DLayer::copy_weights_from_host(const float* h_weights, const float* h_bias) {
@@ -383,6 +420,66 @@ void GPUConv2DLayer::backward(const GPUTensor4D& input, const GPUTensor4D& grad_
     
     int grid_b_update = (out_c_ + block_size - 1) / block_size;
     sgd_update_kernel<<<grid_b_update, block_size>>>(d_bias_, d_grad_bias_, learning_rate, out_c_);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void GPUConv2DLayer::backward_momentum(const GPUTensor4D& input, const GPUTensor4D& grad_output,
+                                        GPUTensor4D& grad_input, float learning_rate,
+                                        const OptimizerConfig& opt_config) {
+    int out_h = grad_output.h;
+    int out_w = grad_output.w;
+    
+    if (grad_input.n != input.n || grad_input.c != in_c_ ||
+        grad_input.h != input.h || grad_input.w != input.w) {
+        grad_input.allocate(input.n, in_c_, input.h, input.w);
+    }
+    
+    int block_size = 256;
+    
+    // Backward data (same as before)
+    int total_inputs = input.n * in_c_ * input.h * input.w;
+    int grid_inputs = (total_inputs + block_size - 1) / block_size;
+    conv2d_backward_data_kernel<<<grid_inputs, block_size>>>(
+        grad_output.d_data, d_weights_, grad_input.d_data,
+        input.n, in_c_, input.h, input.w,
+        out_c_, out_h, out_w,
+        k_, stride_, padding_
+    );
+    CUDA_CHECK(cudaGetLastError());
+    
+    // Backward weights
+    int total_weights = static_cast<int>(weights_size_);
+    int grid_weights = (total_weights + block_size - 1) / block_size;
+    conv2d_backward_weights_kernel<<<grid_weights, block_size>>>(
+        input.d_data, grad_output.d_data, d_grad_weights_, d_grad_bias_,
+        input.n, in_c_, input.h, input.w,
+        out_c_, out_h, out_w,
+        k_, stride_, padding_
+    );
+    CUDA_CHECK(cudaGetLastError());
+    
+    // Backward bias
+    int grid_bias = (out_c_ + block_size - 1) / block_size;
+    conv2d_backward_bias_kernel<<<grid_bias, block_size>>>(
+        grad_output.d_data, d_grad_bias_,
+        input.n, out_c_, out_h, out_w
+    );
+    CUDA_CHECK(cudaGetLastError());
+    
+    // Update weights with Momentum SGD + Weight Decay
+    int grid_w_update = (total_weights + block_size - 1) / block_size;
+    sgd_momentum_update_kernel<<<grid_w_update, block_size>>>(
+        d_weights_, d_grad_weights_, d_velocity_weights_,
+        learning_rate, opt_config.momentum, opt_config.weight_decay, weights_size_
+    );
+    CUDA_CHECK(cudaGetLastError());
+    
+    // Update bias with Momentum SGD (typically no weight decay on bias)
+    int grid_b_update = (out_c_ + block_size - 1) / block_size;
+    sgd_momentum_update_kernel<<<grid_b_update, block_size>>>(
+        d_bias_, d_grad_bias_, d_velocity_bias_,
+        learning_rate, opt_config.momentum, 0.0f, out_c_  // No weight decay on bias
+    );
     CUDA_CHECK(cudaGetLastError());
 }
 

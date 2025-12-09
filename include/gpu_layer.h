@@ -29,6 +29,17 @@ struct GPUTensor4D {
     void copy_to_host(float* h_data) const;
 };
 
+// Optimizer configuration for SGD with Momentum and Weight Decay
+struct OptimizerConfig {
+    float momentum = 0.9f;           // Momentum coefficient
+    float weight_decay = 1e-4f;      // L2 regularization
+    bool use_momentum = true;        // Enable momentum SGD
+    
+    OptimizerConfig() = default;
+    OptimizerConfig(float m, float wd, bool use_m = true)
+        : momentum(m), weight_decay(wd), use_momentum(use_m) {}
+};
+
 class GPUConv2DLayer {
 public:
     GPUConv2DLayer(int in_channels, int out_channels, int kernel_size,
@@ -38,12 +49,19 @@ public:
     void forward(const GPUTensor4D& input, GPUTensor4D& output) const;
     void backward(const GPUTensor4D& input, const GPUTensor4D& grad_output,
                   GPUTensor4D& grad_input, float learning_rate);
+    
+    // Backward with momentum SGD and weight decay
+    void backward_momentum(const GPUTensor4D& input, const GPUTensor4D& grad_output,
+                           GPUTensor4D& grad_input, float learning_rate,
+                           const OptimizerConfig& opt_config);
 
     // Expose weights for optimized kernels
     float* get_weights() const { return d_weights_; }
     float* get_bias() const { return d_bias_; }
     float* get_grad_weights() const { return d_grad_weights_; }
     float* get_grad_bias() const { return d_grad_bias_; }
+    float* get_velocity_weights() const { return d_velocity_weights_; }
+    float* get_velocity_bias() const { return d_velocity_bias_; }
     size_t get_weights_size() const { return weights_size_; }
 
     void copy_weights_from_host(const float* h_weights, const float* h_bias);
@@ -63,6 +81,9 @@ private:
     float* d_bias_ = nullptr;
     float* d_grad_weights_ = nullptr;
     float* d_grad_bias_ = nullptr;
+    // Momentum buffers (velocity)
+    float* d_velocity_weights_ = nullptr;
+    float* d_velocity_bias_ = nullptr;
     size_t weights_size_;
 };
 

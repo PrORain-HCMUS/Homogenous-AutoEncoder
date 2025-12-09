@@ -17,6 +17,10 @@ public:
     void forward(const GPUTensor4D& input, GPUTensor4D& output);
 
     float train_step(const GPUTensor4D& input, const GPUTensor4D& target, float learning_rate);
+    
+    // Train step with Momentum SGD + Weight Decay
+    float train_step_momentum(const GPUTensor4D& input, const GPUTensor4D& target, 
+                              float learning_rate, const OptimizerConfig& opt_config);
 
     void encode(const GPUTensor4D& input, GPUTensor4D& latent);
 
