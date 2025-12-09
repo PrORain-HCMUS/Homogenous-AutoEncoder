@@ -36,7 +36,14 @@ endif
 NVCC = nvcc
 
 CXXFLAGS = -O3 -std=c++17 -Wall -Wextra
-NVCCFLAGS = -O2 -std=c++17 -arch=sm_75 --expt-relaxed-constexpr
+# Aggressive NVCC optimization flags for Phase 3
+# -O3: Maximum optimization
+# --use_fast_math: Use fast math operations (slightly less precise but much faster)
+# -Xptxas -O3: Optimize PTX assembly
+# --maxrregcount=64: Limit registers to improve occupancy
+# -lineinfo: Keep line info for profiling (optional, can remove for production)
+NVCCFLAGS = -O3 -std=c++17 -arch=sm_75 --expt-relaxed-constexpr \
+            --use_fast_math -Xptxas -O3,-v --maxrregcount=64
 
 ifeq ($(UNAME_S),Darwin)
     CXXFLAGS += -march=native
@@ -101,12 +108,17 @@ gpu_train: $(GPU_MAIN) $(GPU_SRC) $(GPU_SHARED_SRC)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -o $@$(EXE_EXT) $(GPU_MAIN) $(GPU_SRC) $(GPU_SHARED_SRC)
 
 gpu_train_opt: $(GPU_MAIN) $(GPU_SRC) $(GPU_OPT_SRC) $(GPU_SHARED_SRC)
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -DUSE_OPTIMIZED_KERNELS -o $@$(EXE_EXT) \
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -DUSE_OPTIMIZED_KERNELS -lcublas -lcudnn -o $@$(EXE_EXT) \
 		$(GPU_MAIN) $(GPU_SRC) $(GPU_OPT_SRC) $(GPU_SHARED_SRC)
 
 full_pipeline: $(GPU_MAIN) $(GPU_SRC) $(GPU_SHARED_SRC) $(SVM_SRC) $(LIBSVM_LIB)
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(LIBSVM_INCLUDE) -DWITH_SVM -o $@$(EXE_EXT) \
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(LIBSVM_INCLUDE) -DWITH_SVM -DWITH_LIBSVM -o $@$(EXE_EXT) \
 		$(GPU_MAIN) $(GPU_SRC) $(GPU_SHARED_SRC) $(SVM_SRC) $(LIBSVM_LIB)
+
+full_pipeline_opt: $(GPU_MAIN) $(GPU_SRC) $(GPU_OPT_SRC) $(GPU_SHARED_SRC) $(SVM_SRC) $(LIBSVM_LIB)
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(LIBSVM_INCLUDE) -DUSE_OPTIMIZED_KERNELS -DWITH_SVM -DWITH_LIBSVM \
+		-lcublas -lcudnn -o $@$(EXE_EXT) \
+		$(GPU_MAIN) $(GPU_SRC) $(GPU_OPT_SRC) $(GPU_SHARED_SRC) $(SVM_SRC) $(LIBSVM_LIB)
 
 $(LIBSVM_DIR)/svm.o:
 	@echo "Building LIBSVM..."

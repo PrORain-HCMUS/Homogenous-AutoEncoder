@@ -39,6 +39,13 @@ public:
     void backward(const GPUTensor4D& input, const GPUTensor4D& grad_output,
                   GPUTensor4D& grad_input, float learning_rate);
 
+    // Expose weights for optimized kernels
+    float* get_weights() const { return d_weights_; }
+    float* get_bias() const { return d_bias_; }
+    float* get_grad_weights() const { return d_grad_weights_; }
+    float* get_grad_bias() const { return d_grad_bias_; }
+    size_t get_weights_size() const { return weights_size_; }
+
     void copy_weights_from_host(const float* h_weights, const float* h_bias);
     void copy_weights_to_host(float* h_weights, float* h_bias) const;
 
@@ -113,6 +120,86 @@ void gpu_conv2d_forward_tiled(const GPUTensor4D& input, const float* d_weights,
 void gpu_conv2d_relu_forward_opt(const GPUTensor4D& input, const float* d_weights,
                                  const float* d_bias, GPUTensor4D& output,
                                  int in_c, int out_c, int k, int stride, int padding);
+
+// Fused Conv+ReLU forward pass - skips ReLU layer entirely
+void gpu_conv2d_relu_fused_forward(const GPUTensor4D& input, 
+                                    const GPUConv2DLayer& conv,
+                                    GPUTensor4D& output);
+
+// Optimized conv forward using tiled shared memory
+void gpu_conv2d_forward_opt(const GPUTensor4D& input,
+                            const GPUConv2DLayer& conv,
+                            GPUTensor4D& output);
+
+// Optimized backward pass with parallel reduction
+void gpu_conv2d_backward_opt(
+    const GPUTensor4D& input,
+    const GPUTensor4D& grad_output,
+    const float* d_weights,
+    float* d_grad_weights,
+    float* d_grad_bias,
+    GPUTensor4D& grad_input,
+    int in_c, int out_c, int k, int stride, int padding
+);
+
+// Optimized SGD update with vectorized access
+void gpu_sgd_update_opt(float* params, const float* grads, float lr, size_t n);
+
+// Full optimized backward for conv layer (includes weight update)
+void gpu_conv2d_backward_full_opt(
+    const GPUTensor4D& input,
+    const GPUTensor4D& grad_output,
+    GPUTensor4D& grad_input,
+    const GPUConv2DLayer& conv,
+    float learning_rate
+);
+
+// Optimized pooling/upsample backward
+void gpu_maxpool2d_backward_opt(const GPUTensor4D& input, const GPUTensor4D& grad_output,
+                                 GPUTensor4D& grad_input, int k, int stride);
+void gpu_upsample2d_backward_opt(const GPUTensor4D& input, const GPUTensor4D& grad_output,
+                                  GPUTensor4D& grad_input, int scale);
+
+// Memory pool cleanup
+void cleanup_gpu_opt_buffers();
+
+// Im2col buffer management
+void ensure_im2col_buffer(size_t required_size);
+
+// cuBLAS-based convolution
+void init_cublas();
+void cleanup_cublas();
+void gpu_conv2d_forward_cublas(
+    const GPUTensor4D& input,
+    const float* d_weights,
+    const float* d_bias,
+    GPUTensor4D& output,
+    int in_c, int out_c, int k, int stride, int padding
+);
+void gpu_conv2d_forward_cublas_wrapper(const GPUTensor4D& input,
+                                        const GPUConv2DLayer& conv,
+                                        GPUTensor4D& output);
+
+// cuDNN-based convolution (fastest - uses NVIDIA's optimized library)
+void init_cudnn();
+void cleanup_cudnn();
+void gpu_conv2d_forward_cudnn(
+    const GPUTensor4D& input,
+    const float* d_weights,
+    const float* d_bias,
+    GPUTensor4D& output,
+    int in_c, int out_c, int k, int stride, int padding
+);
+void gpu_conv2d_forward_cudnn_wrapper(const GPUTensor4D& input,
+                                       const GPUConv2DLayer& conv,
+                                       GPUTensor4D& output);
+void gpu_conv2d_backward_cudnn_full(
+    const GPUTensor4D& input,
+    const GPUTensor4D& grad_output,
+    GPUTensor4D& grad_input,
+    const GPUConv2DLayer& conv,
+    float learning_rate
+);
 #endif
 
 #endif  // GPU_LAYER_H

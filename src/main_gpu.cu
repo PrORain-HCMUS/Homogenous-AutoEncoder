@@ -275,7 +275,7 @@ void print_gpu_info(int device_count) {
 int main(int argc, char** argv) {
     std::string data_dir = "data";
     int epochs = 20;
-    int batch_size = 32;
+    int batch_size = 64;  // Default batch size
     float learning_rate = 1e-3f;
     std::string csv_path = "gpu_phase2_log.csv";
     std::string txt_path = "gpu_phase2_log.txt";
@@ -411,14 +411,26 @@ int main(int argc, char** argv) {
     }
     std::mt19937 rng(42);
 
-    GPUTensor4D gpu_batch(batch_size, 3, 32, 32);
+    // Double buffering with CUDA streams for overlapping transfer and compute
+    GPUTensor4D gpu_batch[2];
+    gpu_batch[0].allocate(batch_size, 3, 32, 32);
+    gpu_batch[1].allocate(batch_size, 3, 32, 32);
     GPUTensor4D gpu_output;
 
     const size_t h_batch_size = static_cast<size_t>(batch_size) * 3 * 32 * 32;
-    float* h_batch = nullptr;
-    CUDA_CHECK(cudaMallocHost(&h_batch, h_batch_size * sizeof(float)));
+    
+    // Allocate two pinned host buffers for double buffering
+    float* h_batch[2];
+    CUDA_CHECK(cudaMallocHost(&h_batch[0], h_batch_size * sizeof(float)));
+    CUDA_CHECK(cudaMallocHost(&h_batch[1], h_batch_size * sizeof(float)));
+    
+    // Create CUDA streams for overlapping
+    cudaStream_t streams[2];
+    CUDA_CHECK(cudaStreamCreate(&streams[0]));
+    CUDA_CHECK(cudaStreamCreate(&streams[1]));
 
     std::cout << "\n=== Starting Training ===" << std::endl;
+    std::cout << "Using double-buffered CUDA streams for overlapped transfer/compute" << std::endl;
     std::cout << "Epochs: " << epochs << ", LR: " << learning_rate << std::endl;
     std::cout << std::endl;
     
@@ -438,19 +450,39 @@ int main(int argc, char** argv) {
         float epoch_loss = 0.0f;
         auto epoch_start = std::chrono::high_resolution_clock::now();
 
+        // Prepare first batch
+        for (int b = 0; b < batch_size; ++b) {
+            int img_idx = indices[b];
+            const float* src = train.images.data() + static_cast<size_t>(img_idx) * 3 * 32 * 32;
+            float* dst = h_batch[0] + static_cast<size_t>(b) * 3 * 32 * 32;
+            std::copy(src, src + 3 * 32 * 32, dst);
+        }
+        
         for (int batch = 0; batch < num_batches; ++batch) {
             auto batch_start = std::chrono::high_resolution_clock::now();
-
-            for (int b = 0; b < batch_size; ++b) {
-                int img_idx = indices[batch * batch_size + b];
-                const float* src = train.images.data() + static_cast<size_t>(img_idx) * 3 * 32 * 32;
-                float* dst = h_batch + static_cast<size_t>(b) * 3 * 32 * 32;
-                std::copy(src, src + 3 * 32 * 32, dst);
+            
+            int curr_buf = batch % 2;
+            int next_buf = (batch + 1) % 2;
+            
+            // Async copy current batch to GPU
+            CUDA_CHECK(cudaMemcpyAsync(gpu_batch[curr_buf].d_data, h_batch[curr_buf], 
+                                       h_batch_size * sizeof(float), 
+                                       cudaMemcpyHostToDevice, streams[curr_buf]));
+            
+            // Prepare next batch on CPU while GPU is working (if not last batch)
+            if (batch + 1 < num_batches) {
+                for (int b = 0; b < batch_size; ++b) {
+                    int img_idx = indices[(batch + 1) * batch_size + b];
+                    const float* src = train.images.data() + static_cast<size_t>(img_idx) * 3 * 32 * 32;
+                    float* dst = h_batch[next_buf] + static_cast<size_t>(b) * 3 * 32 * 32;
+                    std::copy(src, src + 3 * 32 * 32, dst);
+                }
             }
+            
+            // Wait for transfer to complete before training
+            CUDA_CHECK(cudaStreamSynchronize(streams[curr_buf]));
 
-            gpu_batch.copy_from_host(h_batch);
-
-            float loss = autoencoder.train_step(gpu_batch, gpu_batch, learning_rate);
+            float loss = autoencoder.train_step(gpu_batch[curr_buf], gpu_batch[curr_buf], learning_rate);
             epoch_loss += loss;
 
             auto batch_end = std::chrono::high_resolution_clock::now();
@@ -522,35 +554,96 @@ int main(int argc, char** argv) {
     logger.log("Starting Feature Extraction & SVM Training...");
     
     const int feature_dim = 128 * 8 * 8;
-    std::vector<float> train_features(static_cast<size_t>(effective_train) * feature_dim);
-    std::vector<int> train_labels(effective_train);
+    const int num_classes = 10;
+    const int samples_per_class = 1000;  // 1000 per class = 10000 total for SVM
+    const int max_svm_samples = num_classes * samples_per_class;
+    
+    // Stratified sampling: collect up to samples_per_class from each class
+    std::vector<int> class_counts(num_classes, 0);
+    std::vector<float> svm_train_features;
+    std::vector<int> svm_train_labels;
+    svm_train_features.reserve(static_cast<size_t>(max_svm_samples) * feature_dim);
+    svm_train_labels.reserve(max_svm_samples);
     
     GPUTensor4D single_image(1, 3, 32, 32);
     GPUTensor4D latent;
     std::vector<float> h_latent(feature_dim);
     
-    std::cout << "Extracting training features..." << std::endl;
-    logger.log("Extracting training features...");
-    for (int i = 0; i < effective_train; ++i) {
-        const float* src = train.images.data() + static_cast<size_t>(i) * 3 * 32 * 32;
-        single_image.copy_from_host(src);
-        autoencoder.encode(single_image, latent);
-        latent.copy_to_host(h_latent.data());
-        std::copy(h_latent.begin(), h_latent.end(), 
-                  train_features.begin() + static_cast<size_t>(i) * feature_dim);
-        train_labels[i] = train.labels[i];
+    // Progress bar helper
+    auto print_progress = [](int current, int total, double elapsed_sec, const char* task) {
+        int bar_width = 30;
+        float progress = static_cast<float>(current) / total;
+        int pos = static_cast<int>(bar_width * progress);
         
-        if ((i + 1) % 1000 == 0) {
-            std::cout << "\r  Processed " << (i + 1) << "/" << effective_train << std::flush;
+        double eta = (current > 0) ? (elapsed_sec / current) * (total - current) : 0.0;
+        
+        std::cout << "\r  " << task << " [";
+        for (int i = 0; i < bar_width; ++i) {
+            if (i < pos) std::cout << "=";
+            else if (i == pos) std::cout << ">";
+            else std::cout << " ";
         }
+        std::cout << "] " << current << "/" << total 
+                  << " (" << std::fixed << std::setprecision(1) << (progress * 100.0f) << "%)"
+                  << " ETA: " << std::setprecision(1) << eta << "s" << std::flush;
+    };
+    
+    std::cout << "Extracting training features (stratified " << samples_per_class 
+              << " per class = " << max_svm_samples << " for SVM)..." << std::endl;
+    logger.log("Extracting training features (stratified sampling)...");
+    logger.log("  " + std::to_string(samples_per_class) + " samples per class = " 
+               + std::to_string(max_svm_samples) + " total for SVM");
+    
+    auto feat_start = std::chrono::high_resolution_clock::now();
+    int collected = 0;
+    
+    for (int i = 0; i < effective_train; ++i) {
+        int label = train.labels[i];
+        
+        // Only collect if we haven't reached quota for this class
+        if (class_counts[label] < samples_per_class) {
+            const float* src = train.images.data() + static_cast<size_t>(i) * 3 * 32 * 32;
+            single_image.copy_from_host(src);
+            autoencoder.encode(single_image, latent);
+            latent.copy_to_host(h_latent.data());
+            
+            // Add to SVM training set
+            svm_train_features.insert(svm_train_features.end(), h_latent.begin(), h_latent.end());
+            svm_train_labels.push_back(label);
+            
+            class_counts[label]++;
+            collected++;
+            
+            if (collected % 500 == 0 || collected == max_svm_samples) {
+                auto now = std::chrono::high_resolution_clock::now();
+                double elapsed = std::chrono::duration<double>(now - feat_start).count();
+                print_progress(collected, max_svm_samples, elapsed, "Train");
+            }
+            
+            // Early exit if we have enough samples
+            if (collected >= max_svm_samples) break;
+        }
+    }
+    
+    auto train_feat_end = std::chrono::high_resolution_clock::now();
+    double train_feat_time = std::chrono::duration<double>(train_feat_end - feat_start).count();
+    std::cout << "\n  Collected " << collected << " samples (" << samples_per_class 
+              << " per class) in " << std::fixed << std::setprecision(2) << train_feat_time << "s" << std::endl;
+    
+    // Print class distribution
+    std::cout << "  Class distribution: ";
+    for (int c = 0; c < num_classes; ++c) {
+        std::cout << class_counts[c];
+        if (c < num_classes - 1) std::cout << "/";
     }
     std::cout << std::endl;
     
     std::vector<float> test_features(static_cast<size_t>(test.num_images) * feature_dim);
     std::vector<int> test_labels(test.num_images);
     
-    std::cout << "Extracting test features..." << std::endl;
+    std::cout << "Extracting test features (" << test.num_images << " images)..." << std::endl;
     logger.log("Extracting test features...");
+    auto test_feat_start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < test.num_images; ++i) {
         const float* src = test.images.data() + static_cast<size_t>(i) * 3 * 32 * 32;
         single_image.copy_from_host(src);
@@ -560,27 +653,91 @@ int main(int argc, char** argv) {
                   test_features.begin() + static_cast<size_t>(i) * feature_dim);
         test_labels[i] = test.labels[i];
         
-        if ((i + 1) % 1000 == 0) {
-            std::cout << "\r  Processed " << (i + 1) << "/" << test.num_images << std::flush;
+        if ((i + 1) % 500 == 0 || i == test.num_images - 1) {
+            auto now = std::chrono::high_resolution_clock::now();
+            double elapsed = std::chrono::duration<double>(now - test_feat_start).count();
+            print_progress(i + 1, test.num_images, elapsed, "Test ");
         }
     }
-    std::cout << std::endl;
+    auto test_feat_end = std::chrono::high_resolution_clock::now();
+    double test_feat_time = std::chrono::duration<double>(test_feat_end - test_feat_start).count();
+    std::cout << "\n  Done in " << std::fixed << std::setprecision(2) << test_feat_time << "s" << std::endl;
     
-    std::cout << "Training SVM classifier..." << std::endl;
+    double total_feat_time = train_feat_time + test_feat_time;
+    std::cout << "Total feature extraction: " << std::setprecision(2) << total_feat_time << "s" << std::endl;
+    logger.log("Feature extraction time: " + std::to_string(total_feat_time) + "s");
+    
+    // L2 normalize features for better SVM performance
+    std::cout << "Normalizing features (L2)..." << std::endl;
+    logger.log("Normalizing features (L2)...");
+    auto norm_start = std::chrono::high_resolution_clock::now();
+    
+    auto l2_normalize = [](float* features, int num_samples, int dim) {
+        for (int i = 0; i < num_samples; ++i) {
+            float* vec = features + static_cast<size_t>(i) * dim;
+            float norm = 0.0f;
+            for (int j = 0; j < dim; ++j) {
+                norm += vec[j] * vec[j];
+            }
+            norm = std::sqrt(norm) + 1e-8f;  // avoid division by zero
+            for (int j = 0; j < dim; ++j) {
+                vec[j] /= norm;
+            }
+        }
+    };
+    
+    const int svm_train_size = static_cast<int>(svm_train_labels.size());
+    l2_normalize(svm_train_features.data(), svm_train_size, feature_dim);
+    l2_normalize(test_features.data(), test.num_images, feature_dim);
+    auto norm_end = std::chrono::high_resolution_clock::now();
+    double norm_time = std::chrono::duration<double>(norm_end - norm_start).count();
+    std::cout << "  Done in " << std::setprecision(2) << norm_time << "s" << std::endl;
+    
+    std::cout << "\nTraining SVM classifier..." << std::endl;
+    std::cout << "  Kernel: RBF | C: 10 | gamma: " << std::scientific << std::setprecision(4) 
+              << (1.0 / feature_dim) << " (auto=1/dim)" << std::endl;
+    std::cout << "  Samples: " << svm_train_size << " (stratified) | Features: " << feature_dim << std::endl;
     logger.log("Training SVM classifier...");
-    SVMWrapper svm;
-    svm.train(train_features.data(), train_labels.data(), effective_train, feature_dim);
     
-    std::cout << "Evaluating on test set..." << std::endl;
+    auto svm_start = std::chrono::high_resolution_clock::now();
+    SVMWrapper svm;
+    svm.set_C(10.0);  // C=10 as per project spec
+    // gamma=auto means 1/feature_dim, which is default in SVMWrapper
+    svm.train(svm_train_features.data(), svm_train_labels.data(), svm_train_size, feature_dim);
+    auto svm_end = std::chrono::high_resolution_clock::now();
+    double svm_time = std::chrono::duration<double>(svm_end - svm_start).count();
+    std::cout << "  SVM training complete in " << std::fixed << std::setprecision(2) << svm_time << "s" << std::endl;
+    logger.log("SVM training time: " + std::to_string(svm_time) + "s");
+    
+    std::cout << "\nEvaluating on test set (" << test.num_images << " images)..." << std::endl;
+    auto eval_start = std::chrono::high_resolution_clock::now();
     float accuracy = svm.evaluate(test_features.data(), test_labels.data(), 
                                    test.num_images, feature_dim);
-    std::cout << "Test Accuracy: " << std::fixed << std::setprecision(2) 
-              << (accuracy * 100.0f) << "%" << std::endl;
+    auto eval_end = std::chrono::high_resolution_clock::now();
+    double eval_time = std::chrono::duration<double>(eval_end - eval_start).count();
     
-    logger.log_svm_results(accuracy, effective_train, test.num_images, feature_dim);
+    std::cout << "\n============================================================" << std::endl;
+    std::cout << "SVM RESULTS" << std::endl;
+    std::cout << "============================================================" << std::endl;
+    std::cout << "  Training samples: " << svm_train_size << " (stratified " << samples_per_class << "/class)" << std::endl;
+    std::cout << "  Test samples: " << test.num_images << std::endl;
+    std::cout << "  Test Accuracy: " << std::fixed << std::setprecision(2) 
+              << (accuracy * 100.0f) << "%" << std::endl;
+    std::cout << "  Evaluation time: " << std::setprecision(2) << eval_time << "s" << std::endl;
+    std::cout << "============================================================" << std::endl;
+    
+    logger.log_svm_results(accuracy, svm_train_size, test.num_images, feature_dim);
 #endif
 
-    CUDA_CHECK(cudaFreeHost(h_batch));
+    // Cleanup double buffers and streams
+    CUDA_CHECK(cudaFreeHost(h_batch[0]));
+    CUDA_CHECK(cudaFreeHost(h_batch[1]));
+    CUDA_CHECK(cudaStreamDestroy(streams[0]));
+    CUDA_CHECK(cudaStreamDestroy(streams[1]));
+    
+#ifdef USE_OPTIMIZED_KERNELS
+    cleanup_gpu_opt_buffers();
+#endif
 
     CUDA_CHECK(cudaDeviceReset());
 
