@@ -128,6 +128,20 @@ float gpu_mse_loss(const GPUTensor4D& output, const GPUTensor4D& target);
 float gpu_mse_loss_with_grad(const GPUTensor4D& output, const GPUTensor4D& target,
                               GPUTensor4D& grad_output);
 
+// Sigmoid activation layer
+class GPUSigmoidLayer {
+public:
+    void forward(const GPUTensor4D& input, GPUTensor4D& output) const;
+    void backward(const GPUTensor4D& output, const GPUTensor4D& grad_output,
+                  GPUTensor4D& grad_input) const;
+};
+
+// Binary Cross-Entropy loss (for use with Sigmoid output)
+// BCE = -[y*log(ŷ + eps) + (1-y)*log(1-ŷ + eps)]
+float gpu_bce_loss(const GPUTensor4D& output, const GPUTensor4D& target);
+float gpu_bce_loss_with_grad(const GPUTensor4D& output, const GPUTensor4D& target,
+                              GPUTensor4D& grad_output);
+
 #ifdef USE_OPTIMIZED_KERNELS
 void gpu_relu_forward_opt(const GPUTensor4D& input, GPUTensor4D& output);
 void gpu_relu_backward_opt(const GPUTensor4D& input, const GPUTensor4D& grad_output,

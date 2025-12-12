@@ -7,9 +7,15 @@
 #include <string>
 #include <vector>
 
+// Loss function type for autoencoder
+enum class LossType {
+    MSE,    // Mean Squared Error (default, no output activation)
+    BCE     // Binary Cross-Entropy (requires Sigmoid output activation)
+};
+
 class GPUAutoencoder {
 public:
-    GPUAutoencoder();
+    GPUAutoencoder(LossType loss_type = LossType::MSE);
     ~GPUAutoencoder();
 
     void load_weights_from_cpu(const class Autoencoder& cpu_ae);
@@ -28,8 +34,14 @@ public:
     bool load_weights(const std::string& path);
 
     void synchronize();
+    
+    // Get/Set loss type
+    LossType get_loss_type() const { return loss_type_; }
+    void set_loss_type(LossType lt) { loss_type_ = lt; }
 
 private:
+    LossType loss_type_;
+    
     GPUConv2DLayer conv1_;
     GPUReLULayer relu1_;
     GPUMaxPool2DLayer pool1_;
@@ -47,12 +59,15 @@ private:
     GPUUpSample2DLayer up2_;
 
     GPUConv2DLayer conv5_;
+    GPUSigmoidLayer sigmoid_;  // Output activation for BCE loss
 
     GPUTensor4D x0_, x1_, x2_, x3_, x4_, x5_, x6_;
     GPUTensor4D x7_, x8_, x9_, x10_, x11_, x12_, x13_;
+    GPUTensor4D x14_;  // For sigmoid output
     
     GPUTensor4D g0_, g1_, g2_, g3_, g4_, g5_, g6_;
     GPUTensor4D g7_, g8_, g9_, g10_, g11_, g12_, g13_;
+    GPUTensor4D g14_;  // For sigmoid gradient
 
     void copy_input(const GPUTensor4D& input);
 };

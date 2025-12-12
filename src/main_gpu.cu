@@ -302,10 +302,13 @@ int main(int argc, char** argv) {
     std::string weights_load_path;
     std::string weights_save_path = "autoencoder_gpu.weights";
     int device_id = 0;
+    bool use_bce_loss = false;  // Default: MSE loss
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--data" && i + 1 < argc) {
+        if (arg == "--bce-loss") {
+            use_bce_loss = true;
+        } else if (arg == "--data" && i + 1 < argc) {
             data_dir = argv[++i];
         } else if (arg == "--epochs" && i + 1 < argc) {
             epochs = std::stoi(argv[++i]);
@@ -338,6 +341,7 @@ int main(int argc, char** argv) {
                       << "  --load-weights <f>   Load weights from file\n"
                       << "  --save-weights <f>   Save weights to file\n"
                       << "  --device <n>         GPU device ID (default: 0)\n"
+                      << "  --bce-loss           Use BCE loss with Sigmoid output (default: MSE)\n"
                       << "  --help               Show this help\n";
             return 0;
         }
@@ -427,7 +431,18 @@ int main(int argc, char** argv) {
 
     std::cout << "Initializing GPU autoencoder..." << std::endl;
     logger.log("Initializing GPU autoencoder...");
-    GPUAutoencoder autoencoder;
+    
+    // Select loss function based on command line flag
+    LossType loss_type = use_bce_loss ? LossType::BCE : LossType::MSE;
+    GPUAutoencoder autoencoder(loss_type);
+    
+    if (use_bce_loss) {
+        std::cout << "Using BCE loss with Sigmoid output activation" << std::endl;
+        logger.log("Loss function: BCE (Binary Cross-Entropy) with Sigmoid");
+    } else {
+        std::cout << "Using MSE loss (no output activation)" << std::endl;
+        logger.log("Loss function: MSE (Mean Squared Error)");
+    }
 
     if (!weights_load_path.empty()) {
         std::cout << "Loading weights from: " << weights_load_path << std::endl;

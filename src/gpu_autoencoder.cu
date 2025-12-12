@@ -8,8 +8,9 @@
 #include <vector>
 #include <iostream>
 
-GPUAutoencoder::GPUAutoencoder()
-    : conv1_(3, 256, 3, 1, 1),
+GPUAutoencoder::GPUAutoencoder(LossType loss_type)
+    : loss_type_(loss_type),
+      conv1_(3, 256, 3, 1, 1),
       pool1_(2, 2),
       conv2_(256, 128, 3, 1, 1),
       pool2_(2, 2),
@@ -45,7 +46,19 @@ void GPUAutoencoder::forward(const GPUTensor4D& input, GPUTensor4D& output) {
     relu4_.forward(x10_, x11_);
     up2_.forward(x11_, x12_);
 
-    conv5_.forward(x12_, output);
+    conv5_.forward(x12_, x13_);
+    
+    // Apply sigmoid if using BCE loss
+    if (loss_type_ == LossType::BCE) {
+        sigmoid_.forward(x13_, output);
+    } else {
+        // For MSE, just copy x13_ to output (or use x13_ directly)
+        if (output.n != x13_.n || output.c != x13_.c || 
+            output.h != x13_.h || output.w != x13_.w) {
+            output.allocate(x13_.n, x13_.c, x13_.h, x13_.w);
+        }
+        CUDA_CHECK(cudaMemcpy(output.d_data, x13_.d_data, x13_.bytes(), cudaMemcpyDeviceToDevice));
+    }
 }
 
 void GPUAutoencoder::encode(const GPUTensor4D& input, GPUTensor4D& latent) {
@@ -92,10 +105,20 @@ float GPUAutoencoder::train_step(const GPUTensor4D& input, const GPUTensor4D& ta
     relu4_.forward(x10_, x11_);
     up2_.forward(x11_, x12_);
 
-    // Final conv (no activation)
+    // Final conv
     gpu_conv2d_forward_cudnn_wrapper(x12_, conv5_, x13_);
 
-    float loss = gpu_mse_loss_with_grad(x13_, target, g13_);
+    float loss;
+    if (loss_type_ == LossType::BCE) {
+        // Apply sigmoid then BCE loss
+        sigmoid_.forward(x13_, x14_);
+        loss = gpu_bce_loss_with_grad(x14_, target, g14_);
+        // Backprop through sigmoid
+        sigmoid_.backward(x14_, g14_, g13_);
+    } else {
+        // MSE loss (no sigmoid)
+        loss = gpu_mse_loss_with_grad(x13_, target, g13_);
+    }
 
     // ========== BACKWARD PASS - Use cuDNN ==========
     
@@ -150,7 +173,17 @@ float GPUAutoencoder::train_step(const GPUTensor4D& input, const GPUTensor4D& ta
 
     conv5_.forward(x12_, x13_);
 
-    float loss = gpu_mse_loss_with_grad(x13_, target, g13_);
+    float loss;
+    if (loss_type_ == LossType::BCE) {
+        // Apply sigmoid then BCE loss
+        sigmoid_.forward(x13_, x14_);
+        loss = gpu_bce_loss_with_grad(x14_, target, g14_);
+        // Backprop through sigmoid
+        sigmoid_.backward(x14_, g14_, g13_);
+    } else {
+        // MSE loss (no sigmoid)
+        loss = gpu_mse_loss_with_grad(x13_, target, g13_);
+    }
 
     // ========== NAIVE BACKWARD PASS ==========
     conv5_.backward(x12_, g13_, g12_, learning_rate);
@@ -194,10 +227,20 @@ float GPUAutoencoder::train_step_momentum(const GPUTensor4D& input, const GPUTen
     relu4_.forward(x10_, x11_);
     up2_.forward(x11_, x12_);
 
-    // Final conv (no activation)
+    // Final conv
     gpu_conv2d_forward_cudnn_wrapper(x12_, conv5_, x13_);
 
-    float loss = gpu_mse_loss_with_grad(x13_, target, g13_);
+    float loss;
+    if (loss_type_ == LossType::BCE) {
+        // Apply sigmoid then BCE loss
+        sigmoid_.forward(x13_, x14_);
+        loss = gpu_bce_loss_with_grad(x14_, target, g14_);
+        // Backprop through sigmoid
+        sigmoid_.backward(x14_, g14_, g13_);
+    } else {
+        // MSE loss (no sigmoid)
+        loss = gpu_mse_loss_with_grad(x13_, target, g13_);
+    }
 
     // ========== BACKWARD PASS - Use cuDNN with Momentum SGD ==========
     
@@ -252,7 +295,17 @@ float GPUAutoencoder::train_step_momentum(const GPUTensor4D& input, const GPUTen
 
     conv5_.forward(x12_, x13_);
 
-    float loss = gpu_mse_loss_with_grad(x13_, target, g13_);
+    float loss;
+    if (loss_type_ == LossType::BCE) {
+        // Apply sigmoid then BCE loss
+        sigmoid_.forward(x13_, x14_);
+        loss = gpu_bce_loss_with_grad(x14_, target, g14_);
+        // Backprop through sigmoid
+        sigmoid_.backward(x14_, g14_, g13_);
+    } else {
+        // MSE loss (no sigmoid)
+        loss = gpu_mse_loss_with_grad(x13_, target, g13_);
+    }
 
     // ========== BACKWARD PASS with Momentum SGD ==========
     conv5_.backward_momentum(x12_, g13_, g12_, learning_rate, opt_config);

@@ -896,3 +896,195 @@ float gpu_mse_loss_with_grad(const GPUTensor4D& output, const GPUTensor4D& targe
     
     return gpu_mse_loss(output, target);
 }
+
+// ============================================================
+// SIGMOID ACTIVATION LAYER
+// ============================================================
+// sigmoid(x) = 1 / (1 + exp(-x))
+// ============================================================
+
+__global__ void sigmoid_forward_kernel(const float* __restrict__ input,
+                                        float* __restrict__ output, size_t n) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        // Numerically stable sigmoid
+        float x = input[idx];
+        if (x >= 0) {
+            output[idx] = 1.0f / (1.0f + expf(-x));
+        } else {
+            float exp_x = expf(x);
+            output[idx] = exp_x / (1.0f + exp_x);
+        }
+    }
+}
+
+__global__ void sigmoid_backward_kernel(const float* __restrict__ output,
+                                         const float* __restrict__ grad_output,
+                                         float* __restrict__ grad_input, size_t n) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        // d_sigmoid/d_x = sigmoid(x) * (1 - sigmoid(x)) = output * (1 - output)
+        float s = output[idx];
+        grad_input[idx] = grad_output[idx] * s * (1.0f - s);
+    }
+}
+
+void GPUSigmoidLayer::forward(const GPUTensor4D& input, GPUTensor4D& output) const {
+    if (output.n != input.n || output.c != input.c ||
+        output.h != input.h || output.w != input.w) {
+        output.allocate(input.n, input.c, input.h, input.w);
+    }
+    
+    size_t n = input.size();
+    int block_size = 256;
+    int grid_size = (n + block_size - 1) / block_size;
+    
+    sigmoid_forward_kernel<<<grid_size, block_size>>>(input.d_data, output.d_data, n);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void GPUSigmoidLayer::backward(const GPUTensor4D& output, const GPUTensor4D& grad_output,
+                                GPUTensor4D& grad_input) const {
+    if (grad_input.n != output.n || grad_input.c != output.c ||
+        grad_input.h != output.h || grad_input.w != output.w) {
+        grad_input.allocate(output.n, output.c, output.h, output.w);
+    }
+    
+    size_t n = output.size();
+    int block_size = 256;
+    int grid_size = (n + block_size - 1) / block_size;
+    
+    sigmoid_backward_kernel<<<grid_size, block_size>>>(
+        output.d_data, grad_output.d_data, grad_input.d_data, n);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+// ============================================================
+// BINARY CROSS-ENTROPY LOSS
+// ============================================================
+// BCE = -[y*log(ŷ + eps) + (1-y)*log(1-ŷ + eps)] / N
+// grad = (ŷ - y) / (ŷ * (1-ŷ) + eps) / N
+// ============================================================
+
+__global__ void bce_loss_kernel(
+    const float* __restrict__ output,
+    const float* __restrict__ target,
+    float* __restrict__ partial_sums,
+    size_t n
+) {
+    extern __shared__ float sdata[];
+    
+    size_t tid = threadIdx.x;
+    size_t idx = blockIdx.x * blockDim.x * 2 + threadIdx.x;
+    
+    const float eps = 1e-7f;
+    float val = 0.0f;
+    
+    if (idx < n) {
+        float y = target[idx];
+        float p = fmaxf(fminf(output[idx], 1.0f - eps), eps);  // Clamp to [eps, 1-eps]
+        val = -(y * logf(p) + (1.0f - y) * logf(1.0f - p));
+    }
+    if (idx + blockDim.x < n) {
+        float y = target[idx + blockDim.x];
+        float p = fmaxf(fminf(output[idx + blockDim.x], 1.0f - eps), eps);
+        val += -(y * logf(p) + (1.0f - y) * logf(1.0f - p));
+    }
+    
+    sdata[tid] = val;
+    __syncthreads();
+    
+    for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+    
+    if (tid < 32) {
+        volatile float* vsmem = sdata;
+        if (blockDim.x >= 64) vsmem[tid] += vsmem[tid + 32];
+        float myVal = vsmem[tid];
+        
+        for (int offset = 16; offset > 0; offset /= 2) {
+            myVal += __shfl_down_sync(0xffffffff, myVal, offset);
+        }
+        
+        if (tid == 0) {
+            partial_sums[blockIdx.x] = myVal;
+        }
+    }
+}
+
+__global__ void bce_grad_kernel(
+    const float* __restrict__ output,
+    const float* __restrict__ target,
+    float* __restrict__ grad_output,
+    float scale,
+    size_t n
+) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        const float eps = 1e-7f;
+        float y = target[idx];
+        float p = fmaxf(fminf(output[idx], 1.0f - eps), eps);
+        // d_BCE/d_p = -y/p + (1-y)/(1-p) = (p - y) / (p * (1-p))
+        // Simplified: grad = (p - y) / (p * (1-p) + eps)
+        grad_output[idx] = scale * (p - y) / (p * (1.0f - p) + eps);
+    }
+}
+
+static float* d_bce_partial_sums = nullptr;
+static size_t bce_partial_sums_size = 0;
+
+float gpu_bce_loss(const GPUTensor4D& output, const GPUTensor4D& target) {
+    size_t n = output.size();
+    int block_size = 256;
+    int grid_size = (n + block_size * 2 - 1) / (block_size * 2);
+    
+    if (d_bce_partial_sums == nullptr || bce_partial_sums_size < static_cast<size_t>(grid_size)) {
+        if (d_bce_partial_sums) {
+            cudaFree(d_bce_partial_sums);
+        }
+        bce_partial_sums_size = static_cast<size_t>(grid_size) * 2;
+        CUDA_CHECK(cudaMalloc(&d_bce_partial_sums, bce_partial_sums_size * sizeof(float)));
+    }
+    
+    size_t shared_mem = block_size * sizeof(float);
+    bce_loss_kernel<<<grid_size, block_size, shared_mem>>>(
+        output.d_data, target.d_data, d_bce_partial_sums, n
+    );
+    CUDA_CHECK(cudaGetLastError());
+    
+    std::vector<float> h_partial_sums(grid_size);
+    CUDA_CHECK(cudaMemcpy(h_partial_sums.data(), d_bce_partial_sums, 
+                          grid_size * sizeof(float), cudaMemcpyDeviceToHost));
+    
+    float sum = 0.0f;
+    for (int i = 0; i < grid_size; ++i) {
+        sum += h_partial_sums[i];
+    }
+    
+    return sum / static_cast<float>(n);
+}
+
+float gpu_bce_loss_with_grad(const GPUTensor4D& output, const GPUTensor4D& target,
+                              GPUTensor4D& grad_output) {
+    size_t n = output.size();
+    
+    if (grad_output.n != output.n || grad_output.c != output.c ||
+        grad_output.h != output.h || grad_output.w != output.w) {
+        grad_output.allocate(output.n, output.c, output.h, output.w);
+    }
+    
+    int block_size = 256;
+    int grid_size = (n + block_size - 1) / block_size;
+    
+    float scale = 1.0f / static_cast<float>(n);
+    bce_grad_kernel<<<grid_size, block_size>>>(
+        output.d_data, target.d_data, grad_output.d_data, scale, n
+    );
+    CUDA_CHECK(cudaGetLastError());
+    
+    return gpu_bce_loss(output, target);
+}
