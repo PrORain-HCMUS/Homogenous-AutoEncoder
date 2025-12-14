@@ -1,0 +1,189 @@
+========================================
+CPU AUTOENCODER TRAINING LOG
+========================================
+Start Time: 2025-12-14 11:22:26
+
+--- Configuration ---
+Data Directory: data
+Epochs: 20
+Batch Size: 32
+Learning Rate: 0.001
+Max Train Images: 100
+OpenMP: disabled
+
+--- CPU Optimizations Applied ---
+1. OpenMP parallelization for Conv2D forward/backward
+2. Loop unrolling for 3x3 kernel convolutions
+3. Precomputed stride offsets for memory access
+4. SIMD vectorization for ReLU and MSE operations
+5. OpenMP parallelization for MaxPool2D/UpSample2D
+6. Direct memcpy for batch loading
+7. Thread-local gradient accumulators
+
+Loaded CIFAR-10: train = 50000, test = 10000
+Limited training to 100 images
+--- Dataset Info ---
+Effective Training: 100
+Test Images: 10000
+Batches per Epoch: 3
+
+OpenMP disabled. Running single-threaded.
+
+============================================================
+TRAINING STARTED
+============================================================
+
+--- Epoch 1/20 ---
+Epoch 1/20 [BEST]
+  Avg Loss: 0.259975
+  Best Loss: 0.259975
+  Time: 75.01 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 2/20 ---
+Epoch 2/20 [BEST]
+  Avg Loss: 0.259520
+  Best Loss: 0.259520
+  Time: 74.54 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 3/20 ---
+Epoch 3/20 [BEST]
+  Avg Loss: 0.257048
+  Best Loss: 0.257048
+  Time: 74.28 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 4/20 ---
+Epoch 4/20
+  Avg Loss: 0.260379
+  Best Loss: 0.257048
+  Time: 74.71 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 5/20 ---
+Epoch 5/20
+  Avg Loss: 0.258006
+  Best Loss: 0.257048
+  Time: 73.95 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 6/20 ---
+Epoch 6/20 [BEST]
+  Avg Loss: 0.254716
+  Best Loss: 0.254716
+  Time: 74.32 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 7/20 ---
+Epoch 7/20 [BEST]
+  Avg Loss: 0.251122
+  Best Loss: 0.251122
+  Time: 74.55 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 8/20 ---
+Epoch 8/20
+  Avg Loss: 0.256992
+  Best Loss: 0.251122
+  Time: 74.54 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 9/20 ---
+Epoch 9/20
+  Avg Loss: 0.254065
+  Best Loss: 0.251122
+  Time: 74.88 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 10/20 ---
+Epoch 10/20
+  Avg Loss: 0.252902
+  Best Loss: 0.251122
+  Time: 74.26 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 11/20 ---
+Epoch 11/20
+  Avg Loss: 0.253527
+  Best Loss: 0.251122
+  Time: 74.35 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 12/20 ---
+Epoch 12/20 [BEST]
+  Avg Loss: 0.250627
+  Best Loss: 0.250627
+  Time: 74.57 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 13/20 ---
+Epoch 13/20 [BEST]
+  Avg Loss: 0.247105
+  Best Loss: 0.247105
+  Time: 74.24 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 14/20 ---
+Epoch 14/20
+  Avg Loss: 0.248821
+  Best Loss: 0.247105
+  Time: 76.22 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 15/20 ---
+Epoch 15/20 [BEST]
+  Avg Loss: 0.246633
+  Best Loss: 0.246633
+  Time: 74.86 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 16/20 ---
+Epoch 16/20
+  Avg Loss: 0.249197
+  Best Loss: 0.246633
+  Time: 74.78 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 17/20 ---
+Epoch 17/20 [BEST]
+  Avg Loss: 0.244387
+  Best Loss: 0.244387
+  Time: 76.24 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 18/20 ---
+Epoch 18/20
+  Avg Loss: 0.246469
+  Best Loss: 0.244387
+  Time: 74.57 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 19/20 ---
+Epoch 19/20 [BEST]
+  Avg Loss: 0.243849
+  Best Loss: 0.243849
+  Time: 74.87 seconds
+  Throughput: 0.8 epochs/min
+
+--- Epoch 20/20 ---
+Epoch 20/20 [BEST]
+  Avg Loss: 0.243360
+  Best Loss: 0.243360
+  Time: 74.38 seconds
+  Throughput: 0.8 epochs/min
+
+=== Training Complete ===
+Total Epochs: 20
+Best Loss: 0.243360
+Average Loss: 0.251935
+Total Training Time: 1494.12 seconds
+Saved CPU model weights to cpu_phase1_weights.bin
+
+Log files saved to:
+  TXT: cpu_training.log
+  CSV: cpu_training.csv
+
+========================================
+End Time: 2025-12-14 11:47:23
+========================================
