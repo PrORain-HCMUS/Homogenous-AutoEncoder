@@ -1,0 +1,306 @@
+[2025-12-14 03:11:17] ============================================================
+[2025-12-14 03:11:17] GPU AUTOENCODER TRAINING LOG (Phase 2)
+[2025-12-14 03:11:17] ============================================================
+[2025-12-14 03:11:17] 
+[2025-12-14 03:11:17] CONFIGURATION:
+[2025-12-14 03:11:17]   Data directory: data
+[2025-12-14 03:11:17]   Epochs: 20
+[2025-12-14 03:11:17]   Batch size: 64
+[2025-12-14 03:11:17]   Learning rate: 0.001000
+[2025-12-14 03:11:17]   Max train images: 5000
+[2025-12-14 03:11:17]   Load weights: none
+[2025-12-14 03:11:17]   Save weights: phase2.weights
+[2025-12-14 03:11:17] 
+[2025-12-14 03:11:17] GPU HARDWARE:
+[2025-12-14 03:11:17]   Device: Tesla T4
+[2025-12-14 03:11:17]   Compute capability: 7.5
+[2025-12-14 03:11:17]   Total memory: 15095 MB
+[2025-12-14 03:11:17]   Multiprocessors (SMs): 40
+[2025-12-14 03:11:17]   Max threads/block: 1024
+[2025-12-14 03:11:17] 
+[2025-12-14 03:11:17] ============================================================
+[2025-12-14 03:11:17] CUDA OPTIMIZATIONS APPLIED:
+[2025-12-14 03:11:17] ============================================================
+[2025-12-14 03:11:17] 
+[2025-12-14 03:11:17] 1. KERNEL LAUNCH CONFIGURATION:
+[2025-12-14 03:11:17]    - Conv2D: 2D thread blocks dim3(16,16) = 256 threads
+[2025-12-14 03:11:17]    - MaxPool2D: 2D spatial thread blocks
+[2025-12-14 03:11:17]    - UpSample2D: 2D spatial thread blocks
+[2025-12-14 03:11:17]    - ReLU/MSE: 1D blocks of 256 threads
+[2025-12-14 03:11:17] 
+[2025-12-14 03:11:17] 2. MEMORY OPTIMIZATIONS:
+[2025-12-14 03:11:17]    - Persistent MSE reduction buffer (allocated once)
+[2025-12-14 03:11:17]    - Coalesced memory access patterns
+[2025-12-14 03:11:17]    - Shared memory for tiled convolution (layers_gpu_opt.cu)
+[2025-12-14 03:11:17]    - Constant memory for small frequently-accessed data
+[2025-12-14 03:11:17] 
+[2025-12-14 03:11:17] 3. WARP-LEVEL OPTIMIZATIONS:
+[2025-12-14 03:11:17]    - Warp shuffle reduction for MSE loss computation
+[2025-12-14 03:11:17]    - Uses __shfl_down_sync for fast intra-warp reduction
+[2025-12-14 03:11:17]    - Reduces shared memory bank conflicts
+[2025-12-14 03:11:17] 
+[2025-12-14 03:11:17] 4. TILED CONVOLUTION (Phase 3 kernels):
+[2025-12-14 03:11:17]    - 16x16 tiles for output feature maps
+[2025-12-14 03:11:17]    - Cooperative loading of input tiles to shared memory
+[2025-12-14 03:11:17]    - Reduced global memory bandwidth
+[2025-12-14 03:11:17]    - #pragma unroll for small loops
+[2025-12-14 03:11:17] 
+[2025-12-14 03:11:17] 5. LOOP UNROLLING:
+[2025-12-14 03:11:17]    - Special cases for 3x3 convolution kernel
+[2025-12-14 03:11:17]    - 2x2 MaxPool unrolling
+[2025-12-14 03:11:17]    - Manual unroll hints for critical loops
+[2025-12-14 03:11:17] 
+[2025-12-14 03:11:17] 6. CUDA STREAM OPTIMIZATIONS:
+[2025-12-14 03:11:17]    - Asynchronous memory transfers where applicable
+[2025-12-14 03:11:17]    - Kernel execution overlapping potential
+[2025-12-14 03:11:17] 
+[2025-12-14 03:11:17] EXPECTED SPEEDUP VS NAIVE IMPLEMENTATION:
+[2025-12-14 03:11:17]   - Conv2D: 2-4x (memory coalescing + tiling)
+[2025-12-14 03:11:17]   - MSE Reduction: 3-5x (warp shuffle vs atomic)
+[2025-12-14 03:11:17]   - MaxPool2D: 1.5-2x (2D blocks + unrolling)
+[2025-12-14 03:11:17] 
+[2025-12-14 03:11:17] Loading CIFAR-10 dataset from: data
+[2025-12-14 03:11:19] DATASET:
+[2025-12-14 03:11:19]   Training images: 5000
+[2025-12-14 03:11:19]   Test images: 10000
+[2025-12-14 03:11:19]   Batches per epoch: 78
+[2025-12-14 03:11:19] 
+[2025-12-14 03:11:19] Initializing GPU autoencoder...
+[2025-12-14 03:11:19] Loss function: MSE (Mean Squared Error)
+[2025-12-14 03:11:19] 
+[2025-12-14 03:11:19] ============================================================
+[2025-12-14 03:11:19] TRAINING STARTED
+[2025-12-14 03:11:19] ============================================================
+[2025-12-14 03:11:19] 
+[2025-12-14 03:11:19] OPTIMIZER SETTINGS:
+[2025-12-14 03:11:19]   Momentum: 0.000000
+[2025-12-14 03:11:19]   Weight Decay: 0.000000
+[2025-12-14 03:11:19]   LR Schedule: MultiStepLR (milestones at 50%, 75% epochs)
+[2025-12-14 03:11:19] 
+[2025-12-14 03:11:19] DATA AUGMENTATION:
+[2025-12-14 03:11:19]   Horizontal Flip: disabled
+[2025-12-14 03:11:19]   Random Crop: disabled
+[2025-12-14 03:11:19]   Crop Padding: 4
+[2025-12-14 03:11:19] 
+[2025-12-14 03:11:19] 
+[2025-12-14 03:11:19] --- Epoch 1/20 ---
+[2025-12-14 03:11:19]   Learning rate: 0.001000
+[2025-12-14 03:11:37]   Batch 50/78 | Loss: 0.076996 | Time: 363.54 ms
+[2025-12-14 03:11:47]   Batch 78/78 | Loss: 0.068087 | Time: 370.82 ms
+[2025-12-14 03:11:47] Epoch 1/20 COMPLETE:
+[2025-12-14 03:11:47]   Average Loss: 0.111826
+[2025-12-14 03:11:47]   Epoch Time: 28.22 seconds
+[2025-12-14 03:11:47]   Throughput: 128 epochs/hour
+[2025-12-14 03:11:47]   *** NEW BEST LOSS ***
+[2025-12-14 03:11:47]   Best Loss So Far: 0.111826
+[2025-12-14 03:11:47] 
+[2025-12-14 03:11:47] --- Epoch 2/20 ---
+[2025-12-14 03:12:05]   Batch 50/78 | Loss: 0.059699 | Time: 373.22 ms
+[2025-12-14 03:12:16]   Batch 78/78 | Loss: 0.053610 | Time: 375.60 ms
+[2025-12-14 03:12:16] Epoch 2/20 COMPLETE:
+[2025-12-14 03:12:16]   Average Loss: 0.059613
+[2025-12-14 03:12:16]   Epoch Time: 29.00 seconds
+[2025-12-14 03:12:16]   Throughput: 124 epochs/hour
+[2025-12-14 03:12:16]   *** NEW BEST LOSS ***
+[2025-12-14 03:12:16]   Best Loss So Far: 0.059613
+[2025-12-14 03:12:16] 
+[2025-12-14 03:12:16] --- Epoch 3/20 ---
+[2025-12-14 03:12:35]   Batch 50/78 | Loss: 0.046961 | Time: 380.43 ms
+[2025-12-14 03:12:45]   Batch 78/78 | Loss: 0.043678 | Time: 382.96 ms
+[2025-12-14 03:12:45] Epoch 3/20 COMPLETE:
+[2025-12-14 03:12:45]   Average Loss: 0.048013
+[2025-12-14 03:12:45]   Epoch Time: 29.54 seconds
+[2025-12-14 03:12:45]   Throughput: 122 epochs/hour
+[2025-12-14 03:12:45]   *** NEW BEST LOSS ***
+[2025-12-14 03:12:45]   Best Loss So Far: 0.048013
+[2025-12-14 03:12:45] 
+[2025-12-14 03:12:45] --- Epoch 4/20 ---
+[2025-12-14 03:13:05]   Batch 50/78 | Loss: 0.043283 | Time: 384.37 ms
+[2025-12-14 03:13:15]   Batch 78/78 | Loss: 0.038563 | Time: 384.08 ms
+[2025-12-14 03:13:15] Epoch 4/20 COMPLETE:
+[2025-12-14 03:13:15]   Average Loss: 0.041603
+[2025-12-14 03:13:15]   Epoch Time: 29.90 seconds
+[2025-12-14 03:13:15]   Throughput: 120 epochs/hour
+[2025-12-14 03:13:15]   *** NEW BEST LOSS ***
+[2025-12-14 03:13:15]   Best Loss So Far: 0.041603
+[2025-12-14 03:13:15] 
+[2025-12-14 03:13:15] --- Epoch 5/20 ---
+[2025-12-14 03:13:35]   Batch 50/78 | Loss: 0.036492 | Time: 387.62 ms
+[2025-12-14 03:13:45]   Batch 78/78 | Loss: 0.038068 | Time: 388.97 ms
+[2025-12-14 03:13:45] Epoch 5/20 COMPLETE:
+[2025-12-14 03:13:45]   Average Loss: 0.037507
+[2025-12-14 03:13:45]   Epoch Time: 30.12 seconds
+[2025-12-14 03:13:45]   Throughput: 120 epochs/hour
+[2025-12-14 03:13:45]   *** NEW BEST LOSS ***
+[2025-12-14 03:13:45]   Best Loss So Far: 0.037507
+[2025-12-14 03:13:45] 
+[2025-12-14 03:13:45] --- Epoch 6/20 ---
+[2025-12-14 03:14:05]   Batch 50/78 | Loss: 0.033752 | Time: 389.44 ms
+[2025-12-14 03:14:16]   Batch 78/78 | Loss: 0.031943 | Time: 388.35 ms
+[2025-12-14 03:14:16] Epoch 6/20 COMPLETE:
+[2025-12-14 03:14:16]   Average Loss: 0.034641
+[2025-12-14 03:14:16]   Epoch Time: 30.41 seconds
+[2025-12-14 03:14:16]   Throughput: 118 epochs/hour
+[2025-12-14 03:14:16]   *** NEW BEST LOSS ***
+[2025-12-14 03:14:16]   Best Loss So Far: 0.034641
+[2025-12-14 03:14:16] 
+[2025-12-14 03:14:16] --- Epoch 7/20 ---
+[2025-12-14 03:14:36]   Batch 50/78 | Loss: 0.032996 | Time: 393.47 ms
+[2025-12-14 03:14:47]   Batch 78/78 | Loss: 0.032945 | Time: 394.04 ms
+[2025-12-14 03:14:47] Epoch 7/20 COMPLETE:
+[2025-12-14 03:14:47]   Average Loss: 0.032481
+[2025-12-14 03:14:47]   Epoch Time: 30.67 seconds
+[2025-12-14 03:14:47]   Throughput: 117 epochs/hour
+[2025-12-14 03:14:47]   *** NEW BEST LOSS ***
+[2025-12-14 03:14:47]   Best Loss So Far: 0.032481
+[2025-12-14 03:14:47] 
+[2025-12-14 03:14:47] --- Epoch 8/20 ---
+[2025-12-14 03:15:06]   Batch 50/78 | Loss: 0.030535 | Time: 395.84 ms
+[2025-12-14 03:15:17]   Batch 78/78 | Loss: 0.032425 | Time: 397.32 ms
+[2025-12-14 03:15:17] Epoch 8/20 COMPLETE:
+[2025-12-14 03:15:17]   Average Loss: 0.030774
+[2025-12-14 03:15:17]   Epoch Time: 30.85 seconds
+[2025-12-14 03:15:17]   Throughput: 117 epochs/hour
+[2025-12-14 03:15:17]   *** NEW BEST LOSS ***
+[2025-12-14 03:15:17]   Best Loss So Far: 0.030774
+[2025-12-14 03:15:17] 
+[2025-12-14 03:15:17] --- Epoch 9/20 ---
+[2025-12-14 03:15:37]   Batch 50/78 | Loss: 0.029258 | Time: 396.44 ms
+[2025-12-14 03:15:48]   Batch 78/78 | Loss: 0.024080 | Time: 395.99 ms
+[2025-12-14 03:15:48] Epoch 9/20 COMPLETE:
+[2025-12-14 03:15:48]   Average Loss: 0.029422
+[2025-12-14 03:15:48]   Epoch Time: 31.01 seconds
+[2025-12-14 03:15:48]   Throughput: 116 epochs/hour
+[2025-12-14 03:15:48]   *** NEW BEST LOSS ***
+[2025-12-14 03:15:48]   Best Loss So Far: 0.029422
+[2025-12-14 03:15:48] 
+[2025-12-14 03:15:48] --- Epoch 10/20 ---
+[2025-12-14 03:16:08]   Batch 50/78 | Loss: 0.028673 | Time: 396.78 ms
+[2025-12-14 03:16:19]   Batch 78/78 | Loss: 0.026952 | Time: 399.12 ms
+[2025-12-14 03:16:19] Epoch 10/20 COMPLETE:
+[2025-12-14 03:16:19]   Average Loss: 0.028259
+[2025-12-14 03:16:19]   Epoch Time: 31.08 seconds
+[2025-12-14 03:16:19]   Throughput: 116 epochs/hour
+[2025-12-14 03:16:19]   *** NEW BEST LOSS ***
+[2025-12-14 03:16:19]   Best Loss So Far: 0.028259
+[2025-12-14 03:16:19] 
+[2025-12-14 03:16:19] --- Epoch 11/20 ---
+[2025-12-14 03:16:39]   Batch 50/78 | Loss: 0.026794 | Time: 396.02 ms
+[2025-12-14 03:16:51]   Batch 78/78 | Loss: 0.026538 | Time: 396.71 ms
+[2025-12-14 03:16:51] Epoch 11/20 COMPLETE:
+[2025-12-14 03:16:51]   Average Loss: 0.027310
+[2025-12-14 03:16:51]   Epoch Time: 31.09 seconds
+[2025-12-14 03:16:51]   Throughput: 116 epochs/hour
+[2025-12-14 03:16:51]   *** NEW BEST LOSS ***
+[2025-12-14 03:16:51]   Best Loss So Far: 0.027310
+[2025-12-14 03:16:51] 
+[2025-12-14 03:16:51] --- Epoch 12/20 ---
+[2025-12-14 03:17:11]   Batch 50/78 | Loss: 0.027838 | Time: 400.53 ms
+[2025-12-14 03:17:22]   Batch 78/78 | Loss: 0.024375 | Time: 397.30 ms
+[2025-12-14 03:17:22] Epoch 12/20 COMPLETE:
+[2025-12-14 03:17:22]   Average Loss: 0.026475
+[2025-12-14 03:17:22]   Epoch Time: 31.16 seconds
+[2025-12-14 03:17:22]   Throughput: 116 epochs/hour
+[2025-12-14 03:17:22]   *** NEW BEST LOSS ***
+[2025-12-14 03:17:22]   Best Loss So Far: 0.026475
+[2025-12-14 03:17:22] 
+[2025-12-14 03:17:22] --- Epoch 13/20 ---
+[2025-12-14 03:17:42]   Batch 50/78 | Loss: 0.025031 | Time: 399.22 ms
+[2025-12-14 03:17:53]   Batch 78/78 | Loss: 0.023913 | Time: 398.68 ms
+[2025-12-14 03:17:53] Epoch 13/20 COMPLETE:
+[2025-12-14 03:17:53]   Average Loss: 0.025754
+[2025-12-14 03:17:53]   Epoch Time: 31.18 seconds
+[2025-12-14 03:17:53]   Throughput: 115 epochs/hour
+[2025-12-14 03:17:53]   *** NEW BEST LOSS ***
+[2025-12-14 03:17:53]   Best Loss So Far: 0.025754
+[2025-12-14 03:17:53] 
+[2025-12-14 03:17:53] --- Epoch 14/20 ---
+[2025-12-14 03:18:13]   Batch 50/78 | Loss: 0.025174 | Time: 400.76 ms
+[2025-12-14 03:18:24]   Batch 78/78 | Loss: 0.026798 | Time: 400.63 ms
+[2025-12-14 03:18:24] Epoch 14/20 COMPLETE:
+[2025-12-14 03:18:24]   Average Loss: 0.025108
+[2025-12-14 03:18:24]   Epoch Time: 31.22 seconds
+[2025-12-14 03:18:24]   Throughput: 115 epochs/hour
+[2025-12-14 03:18:24]   *** NEW BEST LOSS ***
+[2025-12-14 03:18:24]   Best Loss So Far: 0.025108
+[2025-12-14 03:18:24] 
+[2025-12-14 03:18:24] --- Epoch 15/20 ---
+[2025-12-14 03:18:44]   Batch 50/78 | Loss: 0.024661 | Time: 399.89 ms
+[2025-12-14 03:18:55]   Batch 78/78 | Loss: 0.024848 | Time: 400.78 ms
+[2025-12-14 03:18:55] Epoch 15/20 COMPLETE:
+[2025-12-14 03:18:55]   Average Loss: 0.024537
+[2025-12-14 03:18:55]   Epoch Time: 31.21 seconds
+[2025-12-14 03:18:55]   Throughput: 115 epochs/hour
+[2025-12-14 03:18:55]   *** NEW BEST LOSS ***
+[2025-12-14 03:18:55]   Best Loss So Far: 0.024537
+[2025-12-14 03:18:55] 
+[2025-12-14 03:18:55] --- Epoch 16/20 ---
+[2025-12-14 03:19:15]   Batch 50/78 | Loss: 0.024493 | Time: 400.74 ms
+[2025-12-14 03:19:27]   Batch 78/78 | Loss: 0.022871 | Time: 399.04 ms
+[2025-12-14 03:19:27] Epoch 16/20 COMPLETE:
+[2025-12-14 03:19:27]   Average Loss: 0.024014
+[2025-12-14 03:19:27]   Epoch Time: 31.21 seconds
+[2025-12-14 03:19:27]   Throughput: 115 epochs/hour
+[2025-12-14 03:19:27]   *** NEW BEST LOSS ***
+[2025-12-14 03:19:27]   Best Loss So Far: 0.024014
+[2025-12-14 03:19:27] 
+[2025-12-14 03:19:27] --- Epoch 17/20 ---
+[2025-12-14 03:19:47]   Batch 50/78 | Loss: 0.021519 | Time: 400.31 ms
+[2025-12-14 03:19:58]   Batch 78/78 | Loss: 0.022739 | Time: 401.35 ms
+[2025-12-14 03:19:58] Epoch 17/20 COMPLETE:
+[2025-12-14 03:19:58]   Average Loss: 0.023550
+[2025-12-14 03:19:58]   Epoch Time: 31.20 seconds
+[2025-12-14 03:19:58]   Throughput: 115 epochs/hour
+[2025-12-14 03:19:58]   *** NEW BEST LOSS ***
+[2025-12-14 03:19:58]   Best Loss So Far: 0.023550
+[2025-12-14 03:19:58] 
+[2025-12-14 03:19:58] --- Epoch 18/20 ---
+[2025-12-14 03:20:18]   Batch 50/78 | Loss: 0.022888 | Time: 400.69 ms
+[2025-12-14 03:20:29]   Batch 78/78 | Loss: 0.022324 | Time: 399.13 ms
+[2025-12-14 03:20:29] Epoch 18/20 COMPLETE:
+[2025-12-14 03:20:29]   Average Loss: 0.023122
+[2025-12-14 03:20:29]   Epoch Time: 31.19 seconds
+[2025-12-14 03:20:29]   Throughput: 115 epochs/hour
+[2025-12-14 03:20:29]   *** NEW BEST LOSS ***
+[2025-12-14 03:20:29]   Best Loss So Far: 0.023122
+[2025-12-14 03:20:29] 
+[2025-12-14 03:20:29] --- Epoch 19/20 ---
+[2025-12-14 03:20:49]   Batch 50/78 | Loss: 0.022663 | Time: 400.59 ms
+[2025-12-14 03:21:00]   Batch 78/78 | Loss: 0.024385 | Time: 401.08 ms
+[2025-12-14 03:21:00] Epoch 19/20 COMPLETE:
+[2025-12-14 03:21:00]   Average Loss: 0.022723
+[2025-12-14 03:21:00]   Epoch Time: 31.20 seconds
+[2025-12-14 03:21:00]   Throughput: 115 epochs/hour
+[2025-12-14 03:21:00]   *** NEW BEST LOSS ***
+[2025-12-14 03:21:00]   Best Loss So Far: 0.022723
+[2025-12-14 03:21:00] 
+[2025-12-14 03:21:00] --- Epoch 20/20 ---
+[2025-12-14 03:21:20]   Batch 50/78 | Loss: 0.020955 | Time: 400.82 ms
+[2025-12-14 03:21:31]   Batch 78/78 | Loss: 0.020630 | Time: 401.69 ms
+[2025-12-14 03:21:31] Epoch 20/20 COMPLETE:
+[2025-12-14 03:21:31]   Average Loss: 0.022356
+[2025-12-14 03:21:31]   Epoch Time: 31.22 seconds
+[2025-12-14 03:21:31]   Throughput: 115 epochs/hour
+[2025-12-14 03:21:31]   *** NEW BEST LOSS ***
+[2025-12-14 03:21:31]   Best Loss So Far: 0.022356
+[2025-12-14 03:21:32] Weights saved successfully to: phase2.weights
+[2025-12-14 03:21:32] 
+[2025-12-14 03:21:32] ============================================================
+[2025-12-14 03:21:32] TRAINING COMPLETE
+[2025-12-14 03:21:32] ============================================================
+[2025-12-14 03:21:32] 
+[2025-12-14 03:21:32] FINAL STATISTICS:
+[2025-12-14 03:21:32]   Total epochs: 20
+[2025-12-14 03:21:32]   Best loss achieved: 0.022356
+[2025-12-14 03:21:32]   Average final loss: 0.034954
+[2025-12-14 03:21:32]   Total training time: 612.67 seconds
+[2025-12-14 03:21:32]   Average time per epoch: 30.63 seconds
+[2025-12-14 03:21:32] 
+[2025-12-14 03:21:32] MODEL:
+[2025-12-14 03:21:32]   Weights saved to: phase2.weights
+[2025-12-14 03:21:32] 
+[2025-12-14 03:21:32] LOG FILES:
+[2025-12-14 03:21:32]   TXT log: phase2.txt
+[2025-12-14 03:21:32]   CSV log: phase2.csv
+[2025-12-14 03:21:32] 
+[2025-12-14 03:21:32] ============================================================
