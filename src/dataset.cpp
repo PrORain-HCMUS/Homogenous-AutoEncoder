@@ -165,6 +165,16 @@ void CIFAR10Dataset::augment_image(float* image, const AugmentConfig& config, st
     if (config.random_crop && config.crop_padding > 0) {
         random_crop_image(image, config.crop_padding, rng);
     }
+    
+    // Apply color jitter (random brightness)
+    if (config.color_jitter && config.brightness_range > 0.0f) {
+        std::uniform_real_distribution<float> dist(-config.brightness_range, config.brightness_range);
+        float brightness_delta = dist(rng);
+        
+        for (int i = 0; i < IMAGE_SIZE; ++i) {
+            image[i] = std::min(1.0f, std::max(0.0f, image[i] + brightness_delta));
+        }
+    }
 }
 
 void CIFAR10Dataset::augment_batch(float* batch, int batch_size, const AugmentConfig& config, std::mt19937& rng) {

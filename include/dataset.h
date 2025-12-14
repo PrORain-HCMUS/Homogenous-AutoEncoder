@@ -10,10 +10,13 @@ struct AugmentConfig {
     bool horizontal_flip = true;      // Random horizontal flip (50% chance)
     bool random_crop = true;          // Random crop with padding
     int crop_padding = 4;             // Padding for random crop (32 -> 40 -> crop back to 32)
+    bool color_jitter = true;         // Random brightness/contrast
+    float brightness_range = 0.2f;    // +/- 20% brightness variation
     
     AugmentConfig() = default;
-    AugmentConfig(bool flip, bool crop, int pad = 4)
-        : horizontal_flip(flip), random_crop(crop), crop_padding(pad) {}
+    AugmentConfig(bool flip, bool crop, int pad = 4, bool jitter = true, float bright = 0.2f)
+        : horizontal_flip(flip), random_crop(crop), crop_padding(pad), 
+          color_jitter(jitter), brightness_range(bright) {}
 };
 
 struct CifarBatch {
