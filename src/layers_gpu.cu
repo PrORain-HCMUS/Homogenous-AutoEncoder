@@ -439,6 +439,72 @@ void GPUReLULayer::backward(const GPUTensor4D& input, const GPUTensor4D& grad_ou
 #endif
 }
 
+// ============== PReLU Implementation ==============
+// PReLU: f(x) = max(0, x) + alpha * min(0, x)
+// alpha is learnable per channel
+
+__global__ void prelu_forward_kernel(const float* __restrict__ input, float* __restrict__ output,
+    const float* __restrict__ alpha, int N, int C, int H, int W) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = N * C * H * W;
+    if (idx >= total) return;
+    int c = (idx / (H * W)) % C;
+    float x = input[idx];
+    output[idx] = (x > 0.0f) ? x : alpha[c] * x;
+}
+
+__global__ void prelu_backward_kernel(const float* __restrict__ input, const float* __restrict__ grad_output,
+    float* __restrict__ grad_input, const float* __restrict__ alpha, float* __restrict__ grad_alpha,
+    int N, int C, int H, int W) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = N * C * H * W;
+    if (idx >= total) return;
+    int c = (idx / (H * W)) % C;
+    float x = input[idx];
+    float go = grad_output[idx];
+    // Gradient w.r.t. input
+    grad_input[idx] = (x > 0.0f) ? go : alpha[c] * go;
+    // Gradient w.r.t. alpha (atomic add since multiple elements contribute)
+    if (x <= 0.0f) {
+        atomicAdd(&grad_alpha[c], go * x);
+    }
+}
+
+GPUPReLULayer::GPUPReLULayer(int num_channels) : num_channels_(num_channels) {
+    CUDA_CHECK(cudaMalloc(&d_alpha_, num_channels * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_alpha_, num_channels * sizeof(float)));
+    // Initialize alpha to 0.25 (as in original PReLU paper)
+    std::vector<float> init_alpha(num_channels, 0.25f);
+    CUDA_CHECK(cudaMemcpy(d_alpha_, init_alpha.data(), num_channels * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemset(d_grad_alpha_, 0, num_channels * sizeof(float)));
+}
+
+GPUPReLULayer::~GPUPReLULayer() {
+    if (d_alpha_) cudaFree(d_alpha_);
+    if (d_grad_alpha_) cudaFree(d_grad_alpha_);
+}
+
+void GPUPReLULayer::forward(const GPUTensor4D& input, GPUTensor4D& output) const {
+    if (output.n != input.n || output.c != input.c || output.h != input.h || output.w != input.w)
+        output.allocate(input.n, input.c, input.h, input.w);
+    int total = input.n * input.c * input.h * input.w;
+    prelu_forward_kernel<<<(total + 255) / 256, 256>>>(input.d_data, output.d_data, d_alpha_, input.n, input.c, input.h, input.w);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void GPUPReLULayer::backward(const GPUTensor4D& input, const GPUTensor4D& grad_output, GPUTensor4D& grad_input, float learning_rate) {
+    if (grad_input.n != input.n || grad_input.c != input.c || grad_input.h != input.h || grad_input.w != input.w)
+        grad_input.allocate(input.n, input.c, input.h, input.w);
+    // Zero out grad_alpha before accumulation
+    CUDA_CHECK(cudaMemset(d_grad_alpha_, 0, num_channels_ * sizeof(float)));
+    int total = input.n * input.c * input.h * input.w;
+    prelu_backward_kernel<<<(total + 255) / 256, 256>>>(input.d_data, grad_output.d_data, grad_input.d_data, d_alpha_, d_grad_alpha_, input.n, input.c, input.h, input.w);
+    CUDA_CHECK(cudaGetLastError());
+    // Update alpha with SGD
+    sgd_update_kernel<<<(num_channels_ + 255) / 256, 256>>>(d_alpha_, d_grad_alpha_, learning_rate, num_channels_);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 __global__ void maxpool2d_forward_kernel(const float* __restrict__ input, float* __restrict__ output, int batch_size, int channels, int in_h, int in_w, int out_h, int out_w, int k, int stride) {
     int ow = blockIdx.x * blockDim.x + threadIdx.x, oh = blockIdx.y * blockDim.y + threadIdx.y;
     int c_n = blockIdx.z, c = c_n % channels, n = c_n / channels;
@@ -580,12 +646,26 @@ float gpu_mse_loss(const GPUTensor4D& output, const GPUTensor4D& target) {
     return sum / static_cast<float>(n);
 }
 
+__global__ void gradient_clip_kernel(float* grad, float max_norm, size_t n) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        grad[idx] = fminf(fmaxf(grad[idx], -max_norm), max_norm);
+    }
+}
+
+void gpu_clip_gradients(GPUTensor4D& grad, float max_norm) {
+    size_t n = grad.size();
+    gradient_clip_kernel<<<(n + 255) / 256, 256>>>(grad.d_data, max_norm, n);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 float gpu_mse_loss_with_grad(const GPUTensor4D& output, const GPUTensor4D& target, GPUTensor4D& grad_output) {
     size_t n = output.size();
     if (grad_output.n != output.n || grad_output.c != output.c || grad_output.h != output.h || grad_output.w != output.w)
         grad_output.allocate(output.n, output.c, output.h, output.w);
     mse_grad_kernel<<<(n + 255) / 256, 256>>>(output.d_data, target.d_data, grad_output.d_data, 2.0f / static_cast<float>(n), n);
     CUDA_CHECK(cudaGetLastError());
+    gpu_clip_gradients(grad_output, 1.0f);
     return gpu_mse_loss(output, target);
 }
 
@@ -671,5 +751,6 @@ float gpu_bce_loss_with_grad(const GPUTensor4D& output, const GPUTensor4D& targe
         grad_output.allocate(output.n, output.c, output.h, output.w);
     bce_grad_kernel<<<(n + 255) / 256, 256>>>(output.d_data, target.d_data, grad_output.d_data, 1.0f / static_cast<float>(n), n);
     CUDA_CHECK(cudaGetLastError());
+    gpu_clip_gradients(grad_output, 1.0f);
     return gpu_bce_loss(output, target);
 }
