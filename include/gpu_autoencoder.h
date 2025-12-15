@@ -24,9 +24,12 @@ public:
     void synchronize();
     LossType get_loss_type() const { return loss_type_; }
     void set_loss_type(LossType lt) { loss_type_ = lt; }
+    void set_use_fp16(bool use_fp16) { use_fp16_ = use_fp16; }
+    bool get_use_fp16() const { return use_fp16_; }
 
 private:
     LossType loss_type_;
+    bool use_fp16_ = false;
     
     // Layers
     GPUConv2DLayer conv1_, conv2_, conv3_, conv4_, conv5_;
@@ -43,6 +46,18 @@ private:
     // Backward pass gradient tensors
     GPUTensor4D g0_, g1_, g2_, g3_, g4_, g5_, g6_, g7_, g8_, g9_;
     GPUTensor4D g10_, g11_, g12_, g13_, g14_, g15_, g16_, g17_, g18_;
+    
+#ifdef USE_CUDA_GRAPHS
+    cudaGraph_t train_graph_ = nullptr;
+    cudaGraphExec_t train_graph_exec_ = nullptr;
+    bool graph_captured_ = false;
+    int captured_batch_size_ = 0;
+    cudaStream_t graph_stream_ = nullptr;
+    
+    void preallocate_tensors(int n, int c, int h, int w);
+    void capture_train_graph(const GPUTensor4D& input, const GPUTensor4D& target, float lr, const OptimizerConfig& opt);
+    void cleanup_graph();
+#endif
 };
 
 void tensor_cpu_to_gpu(const Tensor4D& cpu_tensor, GPUTensor4D& gpu_tensor);

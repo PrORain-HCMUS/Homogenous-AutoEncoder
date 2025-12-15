@@ -13,6 +13,7 @@
 #include "gpu_autoencoder.h"
 #include "gpu_layer.h"
 #include "cuda_utils.h"
+#include "gpu_augmentation.cuh"
 #ifdef WITH_SVM
 #include "svm_wrapper.h"
 #endif
@@ -166,10 +167,12 @@ int main(int argc, char** argv) {
     int epochs = 20, batch_size = 64, max_train_images = 0, device_id = 0;
     float learning_rate = 1e-3f;
     bool use_bce_loss = false;
+    bool use_fp16 = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--bce-loss") use_bce_loss = true;
+        else if (arg == "--fp16") use_fp16 = true;
         else if (arg == "--data" && i + 1 < argc) data_dir = argv[++i];
         else if (arg == "--epochs" && i + 1 < argc) epochs = std::stoi(argv[++i]);
         else if (arg == "--batch" && i + 1 < argc) batch_size = std::stoi(argv[++i]);
@@ -181,7 +184,7 @@ int main(int argc, char** argv) {
         else if (arg == "--save-weights" && i + 1 < argc) weights_save_path = argv[++i];
         else if (arg == "--device" && i + 1 < argc) device_id = std::stoi(argv[++i]);
         else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: " << argv[0] << " [--data <dir>] [--epochs <n>] [--batch <n>] [--lr <f>] [--log <csv>] [--log-txt <txt>] [--max-images <n>] [--load-weights <f>] [--save-weights <f>] [--device <n>] [--bce-loss]\n";
+            std::cout << "Usage: " << argv[0] << " [--data <dir>] [--epochs <n>] [--batch <n>] [--lr <f>] [--log <csv>] [--log-txt <txt>] [--max-images <n>] [--load-weights <f>] [--save-weights <f>] [--device <n>] [--bce-loss] [--fp16]\n";
             return 0;
         }
     }
@@ -215,11 +218,19 @@ int main(int argc, char** argv) {
     std::cout << "  Batch: " << batch_size << ", Batches/epoch: " << num_batches << "\n";
     logger.log_dataset_info(effective_train, test.num_images, num_batches);
 
-    std::cout << "Initializing autoencoder...\n";
+    std::cout << "Initializing autoencoder...\\n";
     LossType loss_type = use_bce_loss ? LossType::BCE : LossType::MSE;
     GPUAutoencoder autoencoder(loss_type);
-    std::cout << "Loss: " << (use_bce_loss ? "BCE+Sigmoid" : "MSE") << "\n";
-    logger.log(std::string("Loss: ") + (use_bce_loss ? "BCE" : "MSE"));
+    autoencoder.set_use_fp16(use_fp16);
+    std::cout << "Loss: " << (use_bce_loss ? "BCE+Sigmoid" : "MSE");
+#ifdef USE_FP16
+    if (use_fp16) std::cout << " | Precision: FP16 (Tensor Cores)";
+    else std::cout << " | Precision: FP32";
+#else
+    if (use_fp16) std::cout << " | FP16 requested but not compiled with -DUSE_FP16";
+#endif
+    std::cout << "\n";
+    logger.log(std::string("Loss: ") + (use_bce_loss ? "BCE" : "MSE") + (use_fp16 ? " FP16" : " FP32"));
 
     if (!weights_load_path.empty()) {
         std::cout << "Loading weights: " << weights_load_path << "\n";
@@ -230,12 +241,19 @@ int main(int argc, char** argv) {
     std::mt19937 rng(42);
 
     GPUTensor4D gpu_batch[2]; gpu_batch[0].allocate(batch_size, 3, 32, 32); gpu_batch[1].allocate(batch_size, 3, 32, 32);
+    GPUTensor4D gpu_aug_batch; gpu_aug_batch.allocate(batch_size, 3, 32, 32);
     GPUTensor4D gpu_output;
     const size_t h_batch_size = static_cast<size_t>(batch_size) * 3 * 32 * 32;
     float* h_batch[2]; CUDA_CHECK(cudaMallocHost(&h_batch[0], h_batch_size * sizeof(float))); CUDA_CHECK(cudaMallocHost(&h_batch[1], h_batch_size * sizeof(float)));
     cudaStream_t streams[2]; CUDA_CHECK(cudaStreamCreate(&streams[0])); CUDA_CHECK(cudaStreamCreate(&streams[1]));
+    
+    GPUAugmenter augmenter;
+    augmenter.init(batch_size, 42);
+    bool use_gpu_aug = aug_config.horizontal_flip || aug_config.random_crop;
 
-    std::cout << "\n=== Training ===\nEpochs: " << epochs << ", LR: " << learning_rate << "\n\n";
+    std::cout << "\n=== Training ===\nEpochs: " << epochs << ", LR: " << learning_rate;
+    if (use_gpu_aug) std::cout << " (GPU Augmentation)";
+    std::cout << "\n\n";
     logger.log("TRAINING STARTED");
 
     auto total_start = std::chrono::high_resolution_clock::now();
@@ -253,7 +271,6 @@ int main(int argc, char** argv) {
             const float* src = train.images.data() + static_cast<size_t>(indices[b]) * 3 * 32 * 32;
             std::copy(src, src + 3 * 32 * 32, h_batch[0] + static_cast<size_t>(b) * 3 * 32 * 32);
         }
-        CIFAR10Dataset::augment_batch(h_batch[0], batch_size, aug_config, rng);
 
         for (int batch = 0; batch < num_batches; ++batch) {
             auto batch_start = std::chrono::high_resolution_clock::now();
@@ -265,10 +282,18 @@ int main(int argc, char** argv) {
                     const float* src = train.images.data() + static_cast<size_t>(indices[(batch + 1) * batch_size + b]) * 3 * 32 * 32;
                     std::copy(src, src + 3 * 32 * 32, h_batch[next_buf] + static_cast<size_t>(b) * 3 * 32 * 32);
                 }
-                CIFAR10Dataset::augment_batch(h_batch[next_buf], batch_size, aug_config, rng);
             }
             CUDA_CHECK(cudaStreamSynchronize(streams[curr_buf]));
-            float loss = autoencoder.train_step_momentum(gpu_batch[curr_buf], gpu_batch[curr_buf], current_lr, opt_config);
+            
+            GPUTensor4D* train_input = &gpu_batch[curr_buf];
+            if (use_gpu_aug) {
+                augmenter.augment(gpu_batch[curr_buf].d_data, gpu_aug_batch.d_data, batch_size, 3, 32, 32,
+                                  aug_config.crop_padding, aug_config.horizontal_flip ? 0.5f : 0.0f,
+                                  aug_config.color_jitter, aug_config.brightness_range,
+                                  aug_config.cutout, aug_config.cutout_size);
+                train_input = &gpu_aug_batch;
+            }
+            float loss = autoencoder.train_step_momentum(*train_input, *train_input, current_lr, opt_config);
             opt_config.step++;
             epoch_loss += loss;
 
