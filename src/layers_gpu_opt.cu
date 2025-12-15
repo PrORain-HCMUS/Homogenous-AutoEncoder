@@ -492,4 +492,328 @@ void cleanup_gpu_opt_buffers() {
     if (d_im2col_buffer) { cudaFree(d_im2col_buffer); d_im2col_buffer = nullptr; im2col_buffer_size = 0; }
 }
 
+extern __global__ void batchnorm_compute_mean_kernel(const float* __restrict__ input, float* __restrict__ mean, int N, int C, int H, int W);
+extern __global__ void batchnorm_compute_var_kernel(const float* __restrict__ input, const float* __restrict__ mean, float* __restrict__ var, int N, int C, int H, int W);
+extern __global__ void batchnorm_update_running_kernel(float* __restrict__ running, const float* __restrict__ batch, float momentum, int C);
+
+__global__ void batchnorm_compute_mean_var_fused_kernel(
+    const float* __restrict__ input,
+    float* __restrict__ mean,
+    float* __restrict__ var,
+    int N, int C, int H, int W
+) {
+    int c = blockIdx.x;
+    if (c >= C) return;
+    
+    extern __shared__ float sdata[];
+    float* s_sum = sdata;
+    float* s_sq_sum = sdata + blockDim.x;
+    
+    int tid = threadIdx.x;
+    int spatial = H * W;
+    int total = N * spatial;
+    
+    float local_sum = 0.0f;
+    float local_sq_sum = 0.0f;
+    
+    for (int i = tid; i < total; i += blockDim.x) {
+        int n = i / spatial;
+        int hw = i % spatial;
+        size_t idx = ((static_cast<size_t>(n) * C + c) * H + hw / W) * W + hw % W;
+        float val = input[idx];
+        local_sum += val;
+        local_sq_sum += val * val;
+    }
+    
+    s_sum[tid] = local_sum;
+    s_sq_sum[tid] = local_sq_sum;
+    __syncthreads();
+    
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            s_sum[tid] += s_sum[tid + s];
+            s_sq_sum[tid] += s_sq_sum[tid + s];
+        }
+        __syncthreads();
+    }
+    
+    if (tid == 0) {
+        float m = s_sum[0] / total;
+        mean[c] = m;
+        var[c] = s_sq_sum[0] / total - m * m;
+    }
+}
+
+__global__ void batchnorm_prelu_fused_forward_kernel(
+    const float* __restrict__ input,
+    float* __restrict__ output,
+    const float* __restrict__ bn_gamma,
+    const float* __restrict__ bn_beta,
+    const float* __restrict__ bn_mean,
+    const float* __restrict__ bn_var,
+    const float* __restrict__ prelu_alpha,
+    int N, int C, int H, int W, float eps
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = N * C * H * W;
+    if (idx >= total) return;
+    
+    int c = (idx / (H * W)) % C;
+    float x = input[idx];
+    
+    float inv_std = rsqrtf(bn_var[c] + eps);
+    float bn_result = bn_gamma[c] * (x - bn_mean[c]) * inv_std + bn_beta[c];
+    
+    output[idx] = (bn_result > 0.0f) ? bn_result : prelu_alpha[c] * bn_result;
+}
+
+void gpu_batchnorm_prelu_fused_forward(const GPUTensor4D& input, GPUTensor4D& output,
+    GPUBatchNorm2D& bn, const GPUPReLULayer& prelu, bool training) {
+    
+    if (output.n != input.n || output.c != input.c || output.h != input.h || output.w != input.w)
+        output.allocate(input.n, input.c, input.h, input.w);
+    
+    int total = input.n * input.c * input.h * input.w;
+    int num_features = bn.get_num_features();
+    float eps = bn.get_eps();
+    
+    const float* mean_ptr;
+    const float* var_ptr;
+    
+    if (training) {
+        batchnorm_compute_mean_var_fused_kernel<<<num_features, 256, 2 * 256 * sizeof(float)>>>(
+            input.d_data, bn.get_cache_mean(), bn.get_cache_var(), input.n, input.c, input.h, input.w);
+        CUDA_CHECK(cudaGetLastError());
+        
+        batchnorm_update_running_kernel<<<(num_features + 255) / 256, 256>>>(
+            bn.get_running_mean(), bn.get_cache_mean(), bn.get_momentum(), num_features);
+        batchnorm_update_running_kernel<<<(num_features + 255) / 256, 256>>>(
+            bn.get_running_var(), bn.get_cache_var(), bn.get_momentum(), num_features);
+        CUDA_CHECK(cudaGetLastError());
+        
+        mean_ptr = bn.get_cache_mean();
+        var_ptr = bn.get_cache_var();
+    } else {
+        // Use running statistics for inference
+        mean_ptr = bn.get_running_mean();
+        var_ptr = bn.get_running_var();
+    }
+    
+    // Fused normalize + PReLU
+    batchnorm_prelu_fused_forward_kernel<<<(total + 255) / 256, 256>>>(
+        input.d_data, output.d_data,
+        bn.get_gamma(), bn.get_beta(),
+        mean_ptr, var_ptr,
+        prelu.get_alpha(),
+        input.n, input.c, input.h, input.w, eps);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+__global__ void prelu_batchnorm_compute_sums_fused_kernel(
+    const float* __restrict__ bn_input,
+    const float* __restrict__ prelu_input,   
+    const float* __restrict__ grad_output,
+    const float* __restrict__ prelu_alpha,   
+    const float* __restrict__ bn_mean,
+    const float* __restrict__ bn_var,
+    float* __restrict__ sum_dy,
+    float* __restrict__ sum_dy_xhat,
+    float* __restrict__ grad_alpha,
+    int N, int C, int H, int W, float eps
+) {
+    int c = blockIdx.x;
+    if (c >= C) return;
+    
+    extern __shared__ float sdata[];
+    float* s_dy = sdata;
+    float* s_dy_xhat = sdata + blockDim.x;
+    float* s_grad_alpha = sdata + 2 * blockDim.x;
+    
+    int tid = threadIdx.x;
+    int spatial = H * W;
+    int total = N * spatial;
+    
+    float m = bn_mean[c];
+    float inv_std = rsqrtf(bn_var[c] + eps);
+    float alpha_c = prelu_alpha[c];
+    
+    float local_dy = 0.0f;
+    float local_dy_xhat = 0.0f;
+    float local_grad_alpha = 0.0f;
+    
+    for (int i = tid; i < total; i += blockDim.x) {
+        int n = i / spatial;
+        int hw = i % spatial;
+        size_t idx = ((static_cast<size_t>(n) * C + c) * H + hw / W) * W + hw % W;
+        
+        float go = grad_output[idx];
+        float prelu_in = prelu_input[idx];
+        float bn_in = bn_input[idx];
+        
+        float prelu_grad = (prelu_in > 0.0f) ? go : alpha_c * go;
+        
+        if (prelu_in <= 0.0f) {
+            local_grad_alpha += go * prelu_in;
+        }
+        
+        float x_hat = (bn_in - m) * inv_std;
+        local_dy += prelu_grad;
+        local_dy_xhat += prelu_grad * x_hat;
+    }
+    
+    s_dy[tid] = local_dy;
+    s_dy_xhat[tid] = local_dy_xhat;
+    s_grad_alpha[tid] = local_grad_alpha;
+    __syncthreads();
+    
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            s_dy[tid] += s_dy[tid + s];
+            s_dy_xhat[tid] += s_dy_xhat[tid + s];
+            s_grad_alpha[tid] += s_grad_alpha[tid + s];
+        }
+        __syncthreads();
+    }
+    
+    if (tid == 0) {
+        sum_dy[c] = s_dy[0];
+        sum_dy_xhat[c] = s_dy_xhat[0];
+        atomicAdd(&grad_alpha[c], s_grad_alpha[0]);
+    }
+}
+
+__global__ void prelu_batchnorm_backward_fused_kernel(
+    const float* __restrict__ bn_input,
+    const float* __restrict__ prelu_input,
+    const float* __restrict__ grad_output,
+    float* __restrict__ grad_input,
+    float* __restrict__ grad_gamma,
+    float* __restrict__ grad_beta,
+    const float* __restrict__ prelu_alpha,
+    const float* __restrict__ bn_gamma,
+    const float* __restrict__ bn_mean,
+    const float* __restrict__ bn_var,
+    const float* __restrict__ sum_dy,
+    const float* __restrict__ sum_dy_xhat,
+    int N, int C, int H, int W, float eps
+) {
+    extern __shared__ float smem[];
+    float* s_grad_gamma = smem;
+    float* s_grad_beta = smem + C;
+    
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = N * C * H * W;
+    
+    for (int i = tid; i < C; i += blockDim.x) {
+        s_grad_gamma[i] = 0.0f;
+        s_grad_beta[i] = 0.0f;
+    }
+    __syncthreads();
+    
+    if (idx < total) {
+        int c = (idx / (H * W)) % C;
+        int M = N * H * W;
+        
+        float go = grad_output[idx];
+        float prelu_in = prelu_input[idx];
+        float bn_in = bn_input[idx];
+        float alpha_c = prelu_alpha[c];
+        
+        float prelu_grad = (prelu_in > 0.0f) ? go : alpha_c * go;
+        
+        float inv_std = rsqrtf(bn_var[c] + eps);
+        float x_hat = (bn_in - bn_mean[c]) * inv_std;
+        
+        grad_input[idx] = bn_gamma[c] * inv_std * (prelu_grad - sum_dy[c] / M - x_hat * sum_dy_xhat[c] / M);
+        
+        atomicAdd(&s_grad_gamma[c], prelu_grad * x_hat);
+        atomicAdd(&s_grad_beta[c], prelu_grad);
+    }
+    __syncthreads();
+    
+    for (int i = tid; i < C; i += blockDim.x) {
+        if (s_grad_gamma[i] != 0.0f) {
+            atomicAdd(&grad_gamma[i], s_grad_gamma[i]);
+        }
+        if (s_grad_beta[i] != 0.0f) {
+            atomicAdd(&grad_beta[i], s_grad_beta[i]);
+        }
+    }
+    for (int i = tid; i < C; i += blockDim.x) {
+        if (s_grad_gamma[i] != 0.0f) {
+            atomicAdd(&grad_gamma[i], s_grad_gamma[i]);
+        }
+        if (s_grad_beta[i] != 0.0f) {
+            atomicAdd(&grad_beta[i], s_grad_beta[i]);
+        }
+    }
+}
+
+static float* d_persistent_sum_dy = nullptr;
+static float* d_persistent_sum_dy_xhat = nullptr;
+static size_t persistent_bn_buffer_size = 0;
+
+void ensure_bn_backward_buffers(size_t required_size) {
+    if (d_persistent_sum_dy == nullptr || persistent_bn_buffer_size < required_size) {
+        if (d_persistent_sum_dy) cudaFree(d_persistent_sum_dy);
+        if (d_persistent_sum_dy_xhat) cudaFree(d_persistent_sum_dy_xhat);
+        persistent_bn_buffer_size = required_size * 2;
+        CUDA_CHECK(cudaMalloc(&d_persistent_sum_dy, persistent_bn_buffer_size * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_persistent_sum_dy_xhat, persistent_bn_buffer_size * sizeof(float)));
+    }
+}
+
+void cleanup_bn_backward_buffers() {
+    if (d_persistent_sum_dy) { cudaFree(d_persistent_sum_dy); d_persistent_sum_dy = nullptr; }
+    if (d_persistent_sum_dy_xhat) { cudaFree(d_persistent_sum_dy_xhat); d_persistent_sum_dy_xhat = nullptr; }
+    persistent_bn_buffer_size = 0;
+}
+
+void gpu_prelu_batchnorm_fused_backward(
+    const GPUTensor4D& bn_input,
+    const GPUTensor4D& prelu_input,
+    const GPUTensor4D& grad_output,
+    GPUTensor4D& grad_input,
+    GPUBatchNorm2D& bn,
+    GPUPReLULayer& prelu,
+    float learning_rate
+) {
+    if (grad_input.n != bn_input.n || grad_input.c != bn_input.c || 
+        grad_input.h != bn_input.h || grad_input.w != bn_input.w) {
+        grad_input.allocate(bn_input.n, bn_input.c, bn_input.h, bn_input.w);
+    }
+    
+    int N = bn_input.n, C = bn_input.c, H = bn_input.h, W = bn_input.w;
+    int total = N * C * H * W;
+    int num_features = bn.get_num_features();
+    float eps = bn.get_eps();
+    
+    ensure_bn_backward_buffers(static_cast<size_t>(num_features));
+    
+    CUDA_CHECK(cudaMemset(bn.get_grad_gamma(), 0, num_features * sizeof(float)));
+    CUDA_CHECK(cudaMemset(bn.get_grad_beta(), 0, num_features * sizeof(float)));
+    CUDA_CHECK(cudaMemset(prelu.get_grad_alpha(), 0, num_features * sizeof(float)));
+    
+    prelu_batchnorm_compute_sums_fused_kernel<<<num_features, 256, 3 * 256 * sizeof(float)>>>(
+        bn_input.d_data, prelu_input.d_data, grad_output.d_data,
+        prelu.get_alpha(), bn.get_cache_mean(), bn.get_cache_var(),
+        d_persistent_sum_dy, d_persistent_sum_dy_xhat, prelu.get_grad_alpha(),
+        N, C, H, W, eps);
+    CUDA_CHECK(cudaGetLastError());
+    
+    size_t smem_size = 2 * C * sizeof(float);
+    prelu_batchnorm_backward_fused_kernel<<<(total + 255) / 256, 256, smem_size>>>(
+        bn_input.d_data, prelu_input.d_data, grad_output.d_data, grad_input.d_data,
+        bn.get_grad_gamma(), bn.get_grad_beta(),
+        prelu.get_alpha(), bn.get_gamma(), bn.get_cache_mean(), bn.get_cache_var(),
+        d_persistent_sum_dy, d_persistent_sum_dy_xhat,
+        N, C, H, W, eps);
+    CUDA_CHECK(cudaGetLastError());
+    
+    gpu_sgd_update_opt(bn.get_gamma(), bn.get_grad_gamma(), learning_rate, num_features);
+    gpu_sgd_update_opt(bn.get_beta(), bn.get_grad_beta(), learning_rate, num_features);
+    gpu_sgd_update_opt(prelu.get_alpha(), prelu.get_grad_alpha(), learning_rate, num_features);
+}
+
 #endif
