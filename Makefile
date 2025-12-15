@@ -71,7 +71,7 @@ GPU_MAIN = src/main_gpu.cu
 
 GPU_SHARED_SRC = src/dataset.cpp
 
-SVM_SRC = src/svm_wrapper.cpp
+SVM_SRC = src/svm_wrapper.cu
 
 ifeq ($(OS),Windows_NT)
     EXE_EXT = .exe
@@ -111,6 +111,13 @@ gpu_train_opt: $(GPU_MAIN) $(GPU_SRC) $(GPU_OPT_SRC) $(GPU_SHARED_SRC)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -DUSE_OPTIMIZED_KERNELS -lcublas -lcudnn -o $@$(EXE_EXT) \
 		$(GPU_MAIN) $(GPU_SRC) $(GPU_OPT_SRC) $(GPU_SHARED_SRC)
 
+# Full pipeline with GPU-KNN (no libsvm dependency)
+gpu: $(GPU_MAIN) $(GPU_SRC) $(GPU_OPT_SRC) $(GPU_SHARED_SRC) $(SVM_SRC)
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -DUSE_OPTIMIZED_KERNELS -DWITH_SVM \
+		-lcublas -lcudnn -o $@$(EXE_EXT) \
+		$(GPU_MAIN) $(GPU_SRC) $(GPU_OPT_SRC) $(GPU_SHARED_SRC) $(SVM_SRC)
+
+# Legacy: Full pipeline with LIBSVM (CPU-based SVM)
 full_pipeline: $(GPU_MAIN) $(GPU_SRC) $(GPU_SHARED_SRC) $(SVM_SRC) $(LIBSVM_LIB)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) $(LIBSVM_INCLUDE) -DWITH_SVM -DWITH_LIBSVM -o $@$(EXE_EXT) \
 		$(GPU_MAIN) $(GPU_SRC) $(GPU_SHARED_SRC) $(SVM_SRC) $(LIBSVM_LIB)

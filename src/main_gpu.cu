@@ -77,6 +77,80 @@ public:
     }
 };
 
+// ============== GPU L2 Normalization ==============
+__global__ void l2_normalize_kernel(float* features, int num_samples, int dim) {
+    int sample_idx = blockIdx.x;
+    if (sample_idx >= num_samples) return;
+    
+    float* vec = features + static_cast<size_t>(sample_idx) * dim;
+    
+    // Compute norm using shared memory reduction
+    extern __shared__ float sdata[];
+    float local_sum = 0.0f;
+    for (int j = threadIdx.x; j < dim; j += blockDim.x) {
+        local_sum += vec[j] * vec[j];
+    }
+    sdata[threadIdx.x] = local_sum;
+    __syncthreads();
+    
+    // Reduce within block
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    
+    float norm = sqrtf(sdata[0]) + 1e-8f;
+    
+    // Normalize
+    for (int j = threadIdx.x; j < dim; j += blockDim.x) {
+        vec[j] /= norm;
+    }
+}
+
+void gpu_l2_normalize(float* d_features, int num_samples, int dim) {
+    int block_size = 256;
+    l2_normalize_kernel<<<num_samples, block_size, block_size * sizeof(float)>>>(d_features, num_samples, dim);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+// ============== Batch Feature Extraction ==============
+void extract_features_batch(GPUAutoencoder& autoencoder, const float* images, float* features,
+                           int num_images, int batch_size, int feature_dim, float* h_batch, GPUTensor4D& gpu_batch, GPUTensor4D& latent) {
+    const size_t image_size = 3 * 32 * 32;
+    
+    for (int start = 0; start < num_images; start += batch_size) {
+        int current_batch = std::min(batch_size, num_images - start);
+        
+        // Copy batch to pinned memory
+        for (int b = 0; b < current_batch; ++b) {
+            const float* src = images + static_cast<size_t>(start + b) * image_size;
+            std::copy(src, src + image_size, h_batch + static_cast<size_t>(b) * image_size);
+        }
+        
+        // Reallocate if batch size changed (last batch)
+        if (current_batch != gpu_batch.n) {
+            gpu_batch.allocate(current_batch, 3, 32, 32);
+        }
+        
+        // Copy to GPU
+        CUDA_CHECK(cudaMemcpy(gpu_batch.d_data, h_batch, current_batch * image_size * sizeof(float), cudaMemcpyHostToDevice));
+        
+        // Encode batch
+        autoencoder.encode(gpu_batch, latent);
+        
+        // Copy features back
+        CUDA_CHECK(cudaMemcpy(features + static_cast<size_t>(start) * feature_dim, 
+                             latent.d_data, current_batch * feature_dim * sizeof(float), cudaMemcpyDeviceToHost));
+        
+        // Progress
+        if ((start + current_batch) % 5000 == 0 || start + current_batch == num_images) {
+            std::cout << "\r  Extracted: " << (start + current_batch) << "/" << num_images << " images" << std::flush;
+        }
+    }
+    std::cout << std::endl;
+}
+
 int get_device_count() { int count = 0; CUDA_CHECK(cudaGetDeviceCount(&count)); return count; }
 
 void print_gpu_info(int device_count) {
@@ -223,62 +297,96 @@ int main(int argc, char** argv) {
     logger.log_training_complete(epochs, best_loss, final_avg, total_sec, weights_save_path);
 
 #ifdef WITH_SVM
-    std::cout << "\n=== SVM Training ===\n";
-    const int feature_dim = 128 * 8 * 8, num_classes = 10, samples_per_class = 1000, max_svm_samples = num_classes * samples_per_class;
-    std::vector<int> class_counts(num_classes, 0);
-    std::vector<float> svm_train_features; svm_train_features.reserve(static_cast<size_t>(max_svm_samples) * feature_dim);
-    std::vector<int> svm_train_labels; svm_train_labels.reserve(max_svm_samples);
-    GPUTensor4D single_image(1, 3, 32, 32), latent;
-    std::vector<float> h_latent(feature_dim);
-
-    std::cout << "Extracting train features (" << samples_per_class << "/class)...\n";
+    std::cout << "\n=== SVM Training (Optimized Batch Extraction) ===\n";
+    const int feature_dim = 128 * 8 * 8;  // 8192 features
+    const int svm_batch_size = 64;        // Batch size for feature extraction
+    
+    // Allocate pinned memory for batch processing
+    float* h_svm_batch = nullptr;
+    CUDA_CHECK(cudaMallocHost(&h_svm_batch, static_cast<size_t>(svm_batch_size) * 3 * 32 * 32 * sizeof(float)));
+    GPUTensor4D svm_gpu_batch(svm_batch_size, 3, 32, 32);
+    GPUTensor4D svm_latent;
+    
+    // Extract ALL training features using batch processing
+    std::cout << "Extracting train features (" << effective_train << " images, batch=" << svm_batch_size << ")...\n";
+    std::vector<float> all_train_features(static_cast<size_t>(effective_train) * feature_dim);
     auto feat_start = std::chrono::high_resolution_clock::now();
-    int collected = 0;
-    for (int i = 0; i < effective_train && collected < max_svm_samples; ++i) {
-        int label = train.labels[i];
-        if (class_counts[label] < samples_per_class) {
-            single_image.copy_from_host(train.images.data() + static_cast<size_t>(i) * 3 * 32 * 32);
-            autoencoder.encode(single_image, latent);
-            latent.copy_to_host(h_latent.data());
-            svm_train_features.insert(svm_train_features.end(), h_latent.begin(), h_latent.end());
-            svm_train_labels.push_back(label);
-            class_counts[label]++; collected++;
-        }
-    }
+    
+    extract_features_batch(autoencoder, train.images.data(), all_train_features.data(),
+                          effective_train, svm_batch_size, feature_dim, h_svm_batch, svm_gpu_batch, svm_latent);
+    
     auto train_feat_end = std::chrono::high_resolution_clock::now();
-    std::cout << "  Collected " << collected << " in " << std::fixed << std::setprecision(2) << std::chrono::duration<double>(train_feat_end - feat_start).count() << "s\n";
-
+    double train_feat_time = std::chrono::duration<double>(train_feat_end - feat_start).count();
+    std::cout << "  Done in " << std::fixed << std::setprecision(2) << train_feat_time << "s";
+    std::cout << " (" << static_cast<int>(effective_train / train_feat_time) << " images/sec)\n";
+    
+    // Extract test features using batch processing
+    std::cout << "Extracting test features (" << test.num_images << " images)...\n";
     std::vector<float> test_features(static_cast<size_t>(test.num_images) * feature_dim);
     std::vector<int> test_labels(test.num_images);
-    std::cout << "Extracting test features (" << test.num_images << ")...\n";
+    for (int i = 0; i < test.num_images; ++i) test_labels[i] = test.labels[i];
+    
     auto test_start = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < test.num_images; ++i) {
-        single_image.copy_from_host(test.images.data() + static_cast<size_t>(i) * 3 * 32 * 32);
-        autoencoder.encode(single_image, latent);
-        latent.copy_to_host(h_latent.data());
-        std::copy(h_latent.begin(), h_latent.end(), test_features.begin() + static_cast<size_t>(i) * feature_dim);
-        test_labels[i] = test.labels[i];
-    }
-    std::cout << "  Done in " << std::fixed << std::setprecision(2) << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - test_start).count() << "s\n";
-
-    auto l2_normalize = [](float* features, int num_samples, int dim) {
-        for (int i = 0; i < num_samples; ++i) {
-            float* vec = features + static_cast<size_t>(i) * dim;
-            float norm = 0.0f; for (int j = 0; j < dim; ++j) norm += vec[j] * vec[j];
-            norm = std::sqrt(norm) + 1e-8f;
-            for (int j = 0; j < dim; ++j) vec[j] /= norm;
+    extract_features_batch(autoencoder, test.images.data(), test_features.data(),
+                          test.num_images, svm_batch_size, feature_dim, h_svm_batch, svm_gpu_batch, svm_latent);
+    
+    double test_feat_time = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - test_start).count();
+    std::cout << "  Done in " << std::fixed << std::setprecision(2) << test_feat_time << "s";
+    std::cout << " (" << static_cast<int>(test.num_images / test_feat_time) << " images/sec)\n";
+    
+    // GPU L2 Normalization (much faster than CPU)
+    std::cout << "L2 normalizing features on GPU...\n";
+    float* d_train_features = nullptr;
+    float* d_test_features = nullptr;
+    size_t train_feat_bytes = static_cast<size_t>(effective_train) * feature_dim * sizeof(float);
+    size_t test_feat_bytes = static_cast<size_t>(test.num_images) * feature_dim * sizeof(float);
+    
+    CUDA_CHECK(cudaMalloc(&d_train_features, train_feat_bytes));
+    CUDA_CHECK(cudaMalloc(&d_test_features, test_feat_bytes));
+    CUDA_CHECK(cudaMemcpy(d_train_features, all_train_features.data(), train_feat_bytes, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_test_features, test_features.data(), test_feat_bytes, cudaMemcpyHostToDevice));
+    
+    auto norm_start = std::chrono::high_resolution_clock::now();
+    gpu_l2_normalize(d_train_features, effective_train, feature_dim);
+    gpu_l2_normalize(d_test_features, test.num_images, feature_dim);
+    double norm_time = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - norm_start).count();
+    std::cout << "  Done in " << std::fixed << std::setprecision(4) << norm_time << "s\n";
+    
+    // Copy normalized features back
+    CUDA_CHECK(cudaMemcpy(all_train_features.data(), d_train_features, train_feat_bytes, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(test_features.data(), d_test_features, test_feat_bytes, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaFree(d_train_features));
+    CUDA_CHECK(cudaFree(d_test_features));
+    
+    // Sample balanced training set for SVM (1000 per class = 10000 total)
+    const int num_classes = 10, samples_per_class = 1000;
+    std::vector<int> class_counts(num_classes, 0);
+    std::vector<float> svm_train_features;
+    std::vector<int> svm_train_labels;
+    svm_train_features.reserve(static_cast<size_t>(num_classes * samples_per_class) * feature_dim);
+    svm_train_labels.reserve(num_classes * samples_per_class);
+    
+    for (int i = 0; i < effective_train; ++i) {
+        int label = train.labels[i];
+        if (class_counts[label] < samples_per_class) {
+            const float* feat = all_train_features.data() + static_cast<size_t>(i) * feature_dim;
+            svm_train_features.insert(svm_train_features.end(), feat, feat + feature_dim);
+            svm_train_labels.push_back(label);
+            class_counts[label]++;
         }
-    };
+    }
     const int svm_train_size = static_cast<int>(svm_train_labels.size());
-    l2_normalize(svm_train_features.data(), svm_train_size, feature_dim);
-    l2_normalize(test_features.data(), test.num_images, feature_dim);
-
+    std::cout << "Selected " << svm_train_size << " balanced samples for SVM training\n";
+    
     std::cout << "Training SVM (C=10, RBF)...\n";
     SVMWrapper svm; svm.set_C(10.0);
     svm.train(svm_train_features.data(), svm_train_labels.data(), svm_train_size, feature_dim);
     float accuracy = svm.evaluate(test_features.data(), test_labels.data(), test.num_images, feature_dim);
     std::cout << "Accuracy: " << std::fixed << std::setprecision(2) << (accuracy * 100.0f) << "%\n";
     logger.log_svm_results(accuracy, svm_train_size, test.num_images, feature_dim);
+    
+    // Cleanup SVM resources
+    CUDA_CHECK(cudaFreeHost(h_svm_batch));
 #endif
 
     CUDA_CHECK(cudaFreeHost(h_batch[0])); CUDA_CHECK(cudaFreeHost(h_batch[1]));
