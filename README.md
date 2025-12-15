@@ -5,9 +5,18 @@
   University of Science - Faculty of Information Technology
 </p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/CUDA-12.x-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="CUDA">
+  <img src="https://img.shields.io/badge/cuDNN-8.x-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="cuDNN">
+  <img src="https://img.shields.io/badge/cuML-RAPIDS-7400B8?style=for-the-badge&logo=rapids&logoColor=white" alt="cuML">
+  <img src="https://img.shields.io/badge/ThunderSVM-GPU-FF6B6B?style=for-the-badge" alt="ThunderSVM">
+  <img src="https://img.shields.io/badge/C++-17-00599C?style=for-the-badge&logo=cplusplus&logoColor=white" alt="C++17">
+  <img src="https://img.shields.io/badge/OpenMP-Parallel-0078D4?style=for-the-badge" alt="OpenMP">
+</p>
+
 ---
 
-## 📋 Project Overview
+## Project Overview
 
 This project implements a **GPU-accelerated Convolutional Autoencoder** for unsupervised feature learning on CIFAR-10, achieving **~505× speedup** over CPU baseline and **70% classification accuracy** using extracted features with SVM.
 
@@ -23,13 +32,13 @@ This project implements a **GPU-accelerated Convolutional Autoencoder** for unsu
 
 | Metric | Target | Achieved | Status |
 |:-------|:-------|:---------|:------:|
-| GPU Speedup | >50× | **~505×** | ✅ Exceeded |
-| Classification Accuracy | >50% | **70%** | ✅ Exceeded |
-| Training Time (50K images) | <15 min | **~10.3 min** | ✅ Met |
+| GPU Speedup | >50× | **~505×** | Exceeded |
+| Classification Accuracy | >50% | **70%** | Exceeded |
+| Training Time (50K images) | <15 min | **~10.3 min** | Met |
 
 ---
 
-## 🏗️ Implementation Phases
+## Implementation Phases
 
 | Phase | Description | Key Optimization | Speedup |
 |:-----:|:------------|:-----------------|:-------:|
@@ -48,9 +57,12 @@ This project implements a **GPU-accelerated Convolutional Autoencoder** for unsu
 | cuDNN | ~10.8 min | 0.0114 | ~67% | Production deployment |
 | **BCE** | ~17.8 min | 0.55 | **~70%** | Best classification accuracy |
 
+> [!TIP]
+> The **BCE loss version** produces better features for classification despite slower training, because BCE gradients are more stable for pixel-wise reconstruction.
+
 ---
 
-## 🧠 Network Architecture
+## Network Architecture
 
 ```
 INPUT: (N, 3, 32, 32) - CIFAR-10 RGB images
@@ -77,7 +89,7 @@ Total Parameters: 751,875
 
 ---
 
-## 📊 Results Summary
+## Results Summary
 
 ### Training Performance
 
@@ -101,7 +113,7 @@ Total Parameters: 751,875
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
 # 1. Clone repository
@@ -125,7 +137,7 @@ make full_pipeline           # Phase 4 with SVM
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 Homogenous-AutoEncoder/
@@ -154,9 +166,12 @@ Homogenous-AutoEncoder/
 └── README.md
 ```
 
+> [!IMPORTANT]
+> For the full project report with detailed analysis, see [`docs/report.pdf`](docs/report.pdf) or run the [`report.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/report/notebooks/report.ipynb) notebook.
+
 ---
 
-## 📓 Notebooks
+## Notebooks
 
 All notebooks are available in the [`feat/enhancement`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/tree/feat/enhancement/notebooks) branch:
 
@@ -182,7 +197,7 @@ All notebooks are available in the [`feat/enhancement`](https://github.com/PrORa
 
 ---
 
-## 🔧 Build Targets
+## Build Targets
 
 | Target | Description | Command |
 |:-------|:------------|:--------|
@@ -195,7 +210,7 @@ All notebooks are available in the [`feat/enhancement`](https://github.com/PrORa
 
 ---
 
-## 📋 Requirements
+## Requirements
 
 **GPU Build:**
 - CUDA Toolkit 11.0+
@@ -212,7 +227,7 @@ All notebooks are available in the [`feat/enhancement`](https://github.com/PrORa
 
 ---
 
-## 📚 References
+## References
 
 - [CIFAR-10 Dataset](https://www.cs.toronto.edu/~kriz/cifar.html)
 - [cuDNN Documentation](https://docs.nvidia.com/deeplearning/cudnn/)
@@ -221,6 +236,6 @@ All notebooks are available in the [`feat/enhancement`](https://github.com/PrORa
 
 ---
 
-## 📄 License
+## License
 
 This project is for educational purposes as part of CSC14120 - Parallel Programming course.
