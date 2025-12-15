@@ -82,6 +82,22 @@ public:
     void backward(const GPUTensor4D& input, const GPUTensor4D& grad_output, GPUTensor4D& grad_input) const;
 };
 
+// PReLU with channel-wise learnable slope: f(x) = max(0,x) + alpha * min(0,x)
+class GPUPReLULayer {
+public:
+    explicit GPUPReLULayer(int num_channels);
+    ~GPUPReLULayer();
+    void forward(const GPUTensor4D& input, GPUTensor4D& output) const;
+    void backward(const GPUTensor4D& input, const GPUTensor4D& grad_output, GPUTensor4D& grad_input, float learning_rate);
+    float* get_alpha() const { return d_alpha_; }
+    float* get_grad_alpha() const { return d_grad_alpha_; }
+    int get_num_channels() const { return num_channels_; }
+private:
+    int num_channels_;
+    float* d_alpha_ = nullptr;      // Learnable slope per channel
+    float* d_grad_alpha_ = nullptr; // Gradient for alpha
+};
+
 class GPUMaxPool2DLayer {
 public:
     explicit GPUMaxPool2DLayer(int kernel_size = 2, int stride = 2);
@@ -115,6 +131,7 @@ public:
 
 float gpu_bce_loss(const GPUTensor4D& output, const GPUTensor4D& target);
 float gpu_bce_loss_with_grad(const GPUTensor4D& output, const GPUTensor4D& target, GPUTensor4D& grad_output);
+void gpu_clip_gradients(GPUTensor4D& grad, float max_norm);
 
 #ifdef USE_OPTIMIZED_KERNELS
 void gpu_relu_forward_opt(const GPUTensor4D& input, GPUTensor4D& output);

@@ -12,11 +12,13 @@ struct AugmentConfig {
     int crop_padding = 4;             // Padding for random crop (32 -> 40 -> crop back to 32)
     bool color_jitter = true;         // Random brightness/contrast
     float brightness_range = 0.2f;    // +/- 20% brightness variation
+    bool cutout = true;               // Random erasing (Cutout)
+    int cutout_size = 8;              // Size of cutout region (8x8 pixels)
     
     AugmentConfig() = default;
     AugmentConfig(bool flip, bool crop, int pad = 4, bool jitter = true, float bright = 0.2f)
         : horizontal_flip(flip), random_crop(crop), crop_padding(pad), 
-          color_jitter(jitter), brightness_range(bright) {}
+          color_jitter(jitter), brightness_range(bright), cutout(true), cutout_size(8) {}
 };
 
 struct CifarBatch {
