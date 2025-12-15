@@ -5,4 +5,6 @@ run_cpu_train_workers.py
 *.csv
 *.exe
 *.txt
+docs/
 *.weights
+interview_questions.md

@@ -31,7 +31,7 @@ private:
     // Layers
     GPUConv2DLayer conv1_, conv2_, conv3_, conv4_, conv5_;
     GPUBatchNorm2D bn1_, bn2_, bn3_, bn4_;
-    GPUReLULayer relu1_, relu2_, relu3_, relu4_;
+    GPUPReLULayer prelu1_, prelu2_, prelu3_, prelu4_;
     GPUMaxPool2DLayer pool1_, pool2_;
     GPUUpSample2DLayer up1_, up2_;
     GPUSigmoidLayer sigmoid_;

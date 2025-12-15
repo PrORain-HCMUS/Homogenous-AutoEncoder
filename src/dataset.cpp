@@ -175,6 +175,33 @@ void CIFAR10Dataset::augment_image(float* image, const AugmentConfig& config, st
             image[i] = std::min(1.0f, std::max(0.0f, image[i] + brightness_delta));
         }
     }
+    
+    // Apply Cutout (random erasing) - 50% probability
+    if (config.cutout && config.cutout_size > 0) {
+        std::uniform_real_distribution<float> prob_dist(0.0f, 1.0f);
+        if (prob_dist(rng) < 0.5f) {
+            // Random position for cutout center
+            std::uniform_int_distribution<int> pos_h(0, IMAGE_HEIGHT - 1);
+            std::uniform_int_distribution<int> pos_w(0, IMAGE_WIDTH - 1);
+            int center_h = pos_h(rng);
+            int center_w = pos_w(rng);
+            
+            int half_size = config.cutout_size / 2;
+            int h_start = std::max(0, center_h - half_size);
+            int h_end = std::min(IMAGE_HEIGHT, center_h + half_size);
+            int w_start = std::max(0, center_w - half_size);
+            int w_end = std::min(IMAGE_WIDTH, center_w + half_size);
+            
+            // Zero out the region across all channels
+            for (int c = 0; c < IMAGE_CHANNELS; ++c) {
+                for (int h = h_start; h < h_end; ++h) {
+                    for (int w = w_start; w < w_end; ++w) {
+                        image[c * IMAGE_HEIGHT * IMAGE_WIDTH + h * IMAGE_WIDTH + w] = 0.0f;
+                    }
+                }
+            }
+        }
+    }
 }
 
 void CIFAR10Dataset::augment_batch(float* batch, int batch_size, const AugmentConfig& config, std::mt19937& rng) {

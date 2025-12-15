@@ -18,8 +18,17 @@
 #endif
 
 float get_scheduled_lr(float base_lr, int epoch, int total_epochs) {
+    const int warmup_epochs = 5;
+    if (epoch < warmup_epochs) {
+        // Linear warmup
+        return base_lr * static_cast<float>(epoch + 1) / static_cast<float>(warmup_epochs);
+    }
+    // Cosine annealing after warmup
     const float min_lr = base_lr * 0.001f;
-    float cos_val = cosf(3.14159265f * static_cast<float>(epoch) / static_cast<float>(total_epochs));
+    int adjusted_epoch = epoch - warmup_epochs;
+    int adjusted_total = total_epochs - warmup_epochs;
+    if (adjusted_total <= 0) return base_lr;
+    float cos_val = cosf(3.14159265f * static_cast<float>(adjusted_epoch) / static_cast<float>(adjusted_total));
     return min_lr + 0.5f * (base_lr - min_lr) * (1.0f + cos_val);
 }
 
