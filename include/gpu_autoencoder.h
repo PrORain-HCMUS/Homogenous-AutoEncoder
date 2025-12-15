@@ -24,12 +24,9 @@ public:
     void synchronize();
     LossType get_loss_type() const { return loss_type_; }
     void set_loss_type(LossType lt) { loss_type_ = lt; }
-    void set_use_fp16(bool use_fp16) { use_fp16_ = use_fp16; }
-    bool get_use_fp16() const { return use_fp16_; }
 
 private:
     LossType loss_type_;
-    bool use_fp16_ = false;
     
     // Layers
     GPUConv2DLayer conv1_, conv2_, conv3_, conv4_, conv5_;

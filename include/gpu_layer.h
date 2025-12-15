@@ -193,12 +193,6 @@ void gpu_upsample_conv_fused_forward(const GPUTensor4D& input, const float* weig
 void gpu_upsample_conv_fused_forward_wrapper(const GPUTensor4D& input, const GPUConv2DLayer& conv, 
     GPUTensor4D& output, int scale);
 
-#ifdef USE_FP16
-void gpu_conv2d_forward_cudnn_fp16(const GPUTensor4D& input, const float* d_weights, const float* d_bias,
-    GPUTensor4D& output, int in_c, int out_c, int k, int stride, int padding);
-void gpu_conv2d_forward_cudnn_wrapper_fp16(const GPUTensor4D& input, const GPUConv2DLayer& conv, GPUTensor4D& output);
-void cleanup_fp16_workspace();
-#endif
 #endif
 
 #endif

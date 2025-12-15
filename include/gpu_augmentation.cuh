@@ -23,9 +23,9 @@ __global__ void random_crop_flip_jitter_cutout_kernel(
     
     curandState local_state = states[n];
     
+    bool do_flip = curand_uniform(&local_state) < flip_prob;
     int crop_y = static_cast<int>(curand_uniform(&local_state) * (2 * padding + 1));
     int crop_x = static_cast<int>(curand_uniform(&local_state) * (2 * padding + 1));
-    bool do_flip = curand_uniform(&local_state) < flip_prob;
     
     float brightness_delta = 0.0f;
     if (color_jitter) {
@@ -48,8 +48,9 @@ __global__ void random_crop_flip_jitter_cutout_kernel(
     int ox = blockIdx.x * blockDim.x + threadIdx.x;
     if (oy >= H || ox >= W) return;
     
-    int iy = oy + crop_y - padding;
-    int ix = do_flip ? (W - 1 - ox) + crop_x - padding : ox + crop_x - padding;
+    int src_x = do_flip ? (W - 1 - ox) : ox;
+    int iy = oy + crop_y;
+    int ix = src_x + crop_x;
     
     int half_cutout = cutout_size / 2;
     bool in_cutout = apply_cutout && 
@@ -59,8 +60,10 @@ __global__ void random_crop_flip_jitter_cutout_kernel(
     for (int c = 0; c < C; ++c) {
         float val = 0.0f;
         if (!in_cutout) {
-            if (iy >= 0 && iy < H && ix >= 0 && ix < W) {
-                val = input[((static_cast<size_t>(n) * C + c) * H + iy) * W + ix];
+            if (iy >= padding && iy < H + padding && ix >= padding && ix < W + padding) {
+                int real_iy = iy - padding;
+                int real_ix = ix - padding;
+                val = input[((static_cast<size_t>(n) * C + c) * H + real_iy) * W + real_ix];
             }
             val = fminf(1.0f, fmaxf(0.0f, val + brightness_delta));
         }

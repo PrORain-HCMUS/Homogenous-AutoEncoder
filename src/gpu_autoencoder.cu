@@ -316,63 +316,23 @@ float GPUAutoencoder::train_step_momentum(const GPUTensor4D& input, const GPUTen
     return loss_type_ == LossType::BCE ? gpu_bce_loss(x18_, target) : gpu_mse_loss(x17_, target);
 #else
 #ifdef USE_OPTIMIZED_KERNELS
-#ifdef USE_FP16
-    if (use_fp16_) {
-        gpu_conv2d_forward_cudnn_wrapper_fp16(input, conv1_, x1_);
-    } else {
-        gpu_conv2d_forward_cudnn_wrapper(input, conv1_, x1_);
-    }
-#else
     gpu_conv2d_forward_cudnn_wrapper(input, conv1_, x1_);
-#endif
     gpu_batchnorm_prelu_fused_forward_with_intermediate(x1_, x2_, x3_, bn1_, prelu1_, true);
     pool1_.forward(x3_, x4_);
     
-#ifdef USE_FP16
-    if (use_fp16_) {
-        gpu_conv2d_forward_cudnn_wrapper_fp16(x4_, conv2_, x5_);
-    } else {
-        gpu_conv2d_forward_cudnn_wrapper(x4_, conv2_, x5_);
-    }
-#else
     gpu_conv2d_forward_cudnn_wrapper(x4_, conv2_, x5_);
-#endif
     gpu_batchnorm_prelu_fused_forward_with_intermediate(x5_, x6_, x7_, bn2_, prelu2_, true);
     pool2_.forward(x7_, x8_);
     
-#ifdef USE_FP16
-    if (use_fp16_) {
-        gpu_conv2d_forward_cudnn_wrapper_fp16(x8_, conv3_, x9_);
-    } else {
-        gpu_conv2d_forward_cudnn_wrapper(x8_, conv3_, x9_);
-    }
-#else
     gpu_conv2d_forward_cudnn_wrapper(x8_, conv3_, x9_);
-#endif
     gpu_batchnorm_prelu_fused_forward_with_intermediate(x9_, x10_, x11_, bn3_, prelu3_, true);
     up1_.forward(x11_, x12_);
     
-#ifdef USE_FP16
-    if (use_fp16_) {
-        gpu_conv2d_forward_cudnn_wrapper_fp16(x12_, conv4_, x13_);
-    } else {
-        gpu_conv2d_forward_cudnn_wrapper(x12_, conv4_, x13_);
-    }
-#else
     gpu_conv2d_forward_cudnn_wrapper(x12_, conv4_, x13_);
-#endif
     gpu_batchnorm_prelu_fused_forward_with_intermediate(x13_, x14_, x15_, bn4_, prelu4_, true);
     up2_.forward(x15_, x16_);
     
-#ifdef USE_FP16
-    if (use_fp16_) {
-        gpu_conv2d_forward_cudnn_wrapper_fp16(x16_, conv5_, x17_);
-    } else {
-        gpu_conv2d_forward_cudnn_wrapper(x16_, conv5_, x17_);
-    }
-#else
     gpu_conv2d_forward_cudnn_wrapper(x16_, conv5_, x17_);
-#endif
 #else
     conv1_.forward(input, x1_);
     bn1_.forward(x1_, x2_, true);

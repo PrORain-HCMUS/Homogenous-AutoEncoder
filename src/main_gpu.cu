@@ -167,12 +167,10 @@ int main(int argc, char** argv) {
     int epochs = 20, batch_size = 64, max_train_images = 0, device_id = 0;
     float learning_rate = 1e-3f;
     bool use_bce_loss = false;
-    bool use_fp16 = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--bce-loss") use_bce_loss = true;
-        else if (arg == "--fp16") use_fp16 = true;
         else if (arg == "--data" && i + 1 < argc) data_dir = argv[++i];
         else if (arg == "--epochs" && i + 1 < argc) epochs = std::stoi(argv[++i]);
         else if (arg == "--batch" && i + 1 < argc) batch_size = std::stoi(argv[++i]);
@@ -184,7 +182,7 @@ int main(int argc, char** argv) {
         else if (arg == "--save-weights" && i + 1 < argc) weights_save_path = argv[++i];
         else if (arg == "--device" && i + 1 < argc) device_id = std::stoi(argv[++i]);
         else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: " << argv[0] << " [--data <dir>] [--epochs <n>] [--batch <n>] [--lr <f>] [--log <csv>] [--log-txt <txt>] [--max-images <n>] [--load-weights <f>] [--save-weights <f>] [--device <n>] [--bce-loss] [--fp16]\n";
+            std::cout << "Usage: " << argv[0] << " [--data <dir>] [--epochs <n>] [--batch <n>] [--lr <f>] [--log <csv>] [--log-txt <txt>] [--max-images <n>] [--load-weights <f>] [--save-weights <f>] [--device <n>] [--bce-loss]\n";
             return 0;
         }
     }
@@ -221,16 +219,8 @@ int main(int argc, char** argv) {
     std::cout << "Initializing autoencoder...\\n";
     LossType loss_type = use_bce_loss ? LossType::BCE : LossType::MSE;
     GPUAutoencoder autoencoder(loss_type);
-    autoencoder.set_use_fp16(use_fp16);
-    std::cout << "Loss: " << (use_bce_loss ? "BCE+Sigmoid" : "MSE");
-#ifdef USE_FP16
-    if (use_fp16) std::cout << " | Precision: FP16 (Tensor Cores)";
-    else std::cout << " | Precision: FP32";
-#else
-    if (use_fp16) std::cout << " | FP16 requested but not compiled with -DUSE_FP16";
-#endif
-    std::cout << "\n";
-    logger.log(std::string("Loss: ") + (use_bce_loss ? "BCE" : "MSE") + (use_fp16 ? " FP16" : " FP32"));
+    std::cout << "Loss: " << (use_bce_loss ? "BCE+Sigmoid" : "MSE") << "\n";
+    logger.log(std::string("Loss: ") + (use_bce_loss ? "BCE" : "MSE"));
 
     if (!weights_load_path.empty()) {
         std::cout << "Loading weights: " << weights_load_path << "\n";
