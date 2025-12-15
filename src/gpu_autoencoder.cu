@@ -19,6 +19,25 @@ GPUAutoencoder::~GPUAutoencoder() {}
 void GPUAutoencoder::synchronize() { CUDA_CHECK(cudaDeviceSynchronize()); }
 
 void GPUAutoencoder::forward(const GPUTensor4D& input, GPUTensor4D& output) {
+#ifdef USE_OPTIMIZED_KERNELS
+    gpu_conv2d_forward_cudnn_wrapper(input, conv1_, x1_);
+    gpu_batchnorm_prelu_fused_forward(x1_, x3_, bn1_, prelu1_, false);
+    pool1_.forward(x3_, x4_);
+    
+    gpu_conv2d_forward_cudnn_wrapper(x4_, conv2_, x5_);
+    gpu_batchnorm_prelu_fused_forward(x5_, x7_, bn2_, prelu2_, false);
+    pool2_.forward(x7_, x8_);
+    
+    gpu_conv2d_forward_cudnn_wrapper(x8_, conv3_, x9_);
+    gpu_batchnorm_prelu_fused_forward(x9_, x11_, bn3_, prelu3_, false);
+    up1_.forward(x11_, x12_);
+    
+    gpu_conv2d_forward_cudnn_wrapper(x12_, conv4_, x13_);
+    gpu_batchnorm_prelu_fused_forward(x13_, x15_, bn4_, prelu4_, false);
+    up2_.forward(x15_, x16_);
+    
+    gpu_conv2d_forward_cudnn_wrapper(x16_, conv5_, x17_);
+#else
     conv1_.forward(input, x1_);
     bn1_.forward(x1_, x2_, false);
     prelu1_.forward(x2_, x3_);
@@ -40,6 +59,7 @@ void GPUAutoencoder::forward(const GPUTensor4D& input, GPUTensor4D& output) {
     up2_.forward(x15_, x16_);
     
     conv5_.forward(x16_, x17_);
+#endif
     
     if (loss_type_ == LossType::BCE) {
         sigmoid_.forward(x17_, output);
@@ -53,64 +73,69 @@ void GPUAutoencoder::forward(const GPUTensor4D& input, GPUTensor4D& output) {
 void GPUAutoencoder::encode(const GPUTensor4D& input, GPUTensor4D& latent) {
 #ifdef USE_OPTIMIZED_KERNELS
     gpu_conv2d_forward_cudnn_wrapper(input, conv1_, x1_);
+    gpu_batchnorm_prelu_fused_forward(x1_, x3_, bn1_, prelu1_, false);
+    pool1_.forward(x3_, x4_);
+    
+    gpu_conv2d_forward_cudnn_wrapper(x4_, conv2_, x5_);
+    gpu_batchnorm_prelu_fused_forward(x5_, x7_, bn2_, prelu2_, false);
+    pool2_.forward(x7_, latent);
 #else
     conv1_.forward(input, x1_);
-#endif
     bn1_.forward(x1_, x2_, false);
     prelu1_.forward(x2_, x3_);
     pool1_.forward(x3_, x4_);
     
-#ifdef USE_OPTIMIZED_KERNELS
-    gpu_conv2d_forward_cudnn_wrapper(x4_, conv2_, x5_);
-#else
     conv2_.forward(x4_, x5_);
-#endif
     bn2_.forward(x5_, x6_, false);
     prelu2_.forward(x6_, x7_);
     pool2_.forward(x7_, latent);
+#endif
 }
 
 float GPUAutoencoder::train_step(const GPUTensor4D& input, const GPUTensor4D& target, float learning_rate) {
-    // Forward pass
 #ifdef USE_OPTIMIZED_KERNELS
     gpu_conv2d_forward_cudnn_wrapper(input, conv1_, x1_);
-#else
-    conv1_.forward(input, x1_);
-#endif
     bn1_.forward(x1_, x2_, true);
     prelu1_.forward(x2_, x3_);
     pool1_.forward(x3_, x4_);
     
-#ifdef USE_OPTIMIZED_KERNELS
     gpu_conv2d_forward_cudnn_wrapper(x4_, conv2_, x5_);
-#else
-    conv2_.forward(x4_, x5_);
-#endif
     bn2_.forward(x5_, x6_, true);
     prelu2_.forward(x6_, x7_);
     pool2_.forward(x7_, x8_);
     
-#ifdef USE_OPTIMIZED_KERNELS
     gpu_conv2d_forward_cudnn_wrapper(x8_, conv3_, x9_);
-#else
-    conv3_.forward(x8_, x9_);
-#endif
     bn3_.forward(x9_, x10_, true);
     prelu3_.forward(x10_, x11_);
     up1_.forward(x11_, x12_);
     
-#ifdef USE_OPTIMIZED_KERNELS
     gpu_conv2d_forward_cudnn_wrapper(x12_, conv4_, x13_);
-#else
-    conv4_.forward(x12_, x13_);
-#endif
     bn4_.forward(x13_, x14_, true);
     prelu4_.forward(x14_, x15_);
     up2_.forward(x15_, x16_);
     
-#ifdef USE_OPTIMIZED_KERNELS
     gpu_conv2d_forward_cudnn_wrapper(x16_, conv5_, x17_);
 #else
+    conv1_.forward(input, x1_);
+    bn1_.forward(x1_, x2_, true);
+    prelu1_.forward(x2_, x3_);
+    pool1_.forward(x3_, x4_);
+    
+    conv2_.forward(x4_, x5_);
+    bn2_.forward(x5_, x6_, true);
+    prelu2_.forward(x6_, x7_);
+    pool2_.forward(x7_, x8_);
+    
+    conv3_.forward(x8_, x9_);
+    bn3_.forward(x9_, x10_, true);
+    prelu3_.forward(x10_, x11_);
+    up1_.forward(x11_, x12_);
+    
+    conv4_.forward(x12_, x13_);
+    bn4_.forward(x13_, x14_, true);
+    prelu4_.forward(x14_, x15_);
+    up2_.forward(x15_, x16_);
+    
     conv5_.forward(x16_, x17_);
 #endif
     
@@ -124,46 +149,46 @@ float GPUAutoencoder::train_step(const GPUTensor4D& input, const GPUTensor4D& ta
         loss = gpu_mse_loss_with_grad(x17_, target, g17_);
     }
     
-    // Backward pass
 #ifdef USE_OPTIMIZED_KERNELS
     gpu_conv2d_backward_cudnn_full(x16_, g17_, g16_, conv5_, learning_rate);
+    
+    up2_.backward(x15_, g16_, g15_);
+    gpu_prelu_batchnorm_fused_backward(x13_, x14_, g15_, g13_, bn4_, prelu4_, learning_rate);
+    gpu_conv2d_backward_cudnn_full(x12_, g13_, g12_, conv4_, learning_rate);
+    
+    up1_.backward(x11_, g12_, g11_);
+    gpu_prelu_batchnorm_fused_backward(x9_, x10_, g11_, g9_, bn3_, prelu3_, learning_rate);
+    gpu_prelu_batchnorm_fused_backward(x9_, x10_, g11_, g9_, bn3_, prelu3_, learning_rate);
+    gpu_conv2d_backward_cudnn_full(x8_, g9_, g8_, conv3_, learning_rate);
+    
+    pool2_.backward(x7_, g8_, g7_);
+    gpu_prelu_batchnorm_fused_backward(x5_, x6_, g7_, g5_, bn2_, prelu2_, learning_rate);
+    gpu_conv2d_backward_cudnn_full(x4_, g5_, g4_, conv2_, learning_rate);
+    
+    pool1_.backward(x3_, g4_, g3_);
+    gpu_prelu_batchnorm_fused_backward(x1_, x2_, g3_, g1_, bn1_, prelu1_, learning_rate);
+    gpu_conv2d_backward_cudnn_full(input, g1_, g0_, conv1_, learning_rate);
 #else
     conv5_.backward(x16_, g17_, g16_, learning_rate);
-#endif
     
     up2_.backward(x15_, g16_, g15_);
     prelu4_.backward(x14_, g15_, g14_, learning_rate);
     bn4_.backward(x13_, g14_, g13_, learning_rate);
-#ifdef USE_OPTIMIZED_KERNELS
-    gpu_conv2d_backward_cudnn_full(x12_, g13_, g12_, conv4_, learning_rate);
-#else
     conv4_.backward(x12_, g13_, g12_, learning_rate);
-#endif
     
     up1_.backward(x11_, g12_, g11_);
     prelu3_.backward(x10_, g11_, g10_, learning_rate);
     bn3_.backward(x9_, g10_, g9_, learning_rate);
-#ifdef USE_OPTIMIZED_KERNELS
-    gpu_conv2d_backward_cudnn_full(x8_, g9_, g8_, conv3_, learning_rate);
-#else
     conv3_.backward(x8_, g9_, g8_, learning_rate);
-#endif
     
     pool2_.backward(x7_, g8_, g7_);
     prelu2_.backward(x6_, g7_, g6_, learning_rate);
     bn2_.backward(x5_, g6_, g5_, learning_rate);
-#ifdef USE_OPTIMIZED_KERNELS
-    gpu_conv2d_backward_cudnn_full(x4_, g5_, g4_, conv2_, learning_rate);
-#else
     conv2_.backward(x4_, g5_, g4_, learning_rate);
-#endif
     
     pool1_.backward(x3_, g4_, g3_);
     prelu1_.backward(x2_, g3_, g2_, learning_rate);
     bn1_.backward(x1_, g2_, g1_, learning_rate);
-#ifdef USE_OPTIMIZED_KERNELS
-    gpu_conv2d_backward_cudnn_full(input, g1_, g0_, conv1_, learning_rate);
-#else
     conv1_.backward(input, g1_, g0_, learning_rate);
 #endif
     
@@ -172,7 +197,6 @@ float GPUAutoencoder::train_step(const GPUTensor4D& input, const GPUTensor4D& ta
 
 float GPUAutoencoder::train_step_momentum(const GPUTensor4D& input, const GPUTensor4D& target, 
                                           float learning_rate, const OptimizerConfig& opt_config) {
-    // Forward pass
 #ifdef USE_OPTIMIZED_KERNELS
     gpu_conv2d_forward_cudnn_wrapper(input, conv1_, x1_);
 #else
@@ -226,43 +250,43 @@ float GPUAutoencoder::train_step_momentum(const GPUTensor4D& input, const GPUTen
     }
 #ifdef USE_OPTIMIZED_KERNELS
     gpu_conv2d_backward_cudnn_adamw(x16_, g17_, g16_, conv5_, learning_rate, opt_config);
+    
+    up2_.backward(x15_, g16_, g15_);
+    gpu_prelu_batchnorm_fused_backward(x13_, x14_, g15_, g13_, bn4_, prelu4_, learning_rate);
+    gpu_conv2d_backward_cudnn_adamw(x12_, g13_, g12_, conv4_, learning_rate, opt_config);
+    
+    up1_.backward(x11_, g12_, g11_);
+    gpu_prelu_batchnorm_fused_backward(x9_, x10_, g11_, g9_, bn3_, prelu3_, learning_rate);
+    gpu_conv2d_backward_cudnn_adamw(x8_, g9_, g8_, conv3_, learning_rate, opt_config);
+    
+    pool2_.backward(x7_, g8_, g7_);
+    gpu_prelu_batchnorm_fused_backward(x5_, x6_, g7_, g5_, bn2_, prelu2_, learning_rate);
+    gpu_conv2d_backward_cudnn_adamw(x4_, g5_, g4_, conv2_, learning_rate, opt_config);
+    
+    pool1_.backward(x3_, g4_, g3_);
+    gpu_prelu_batchnorm_fused_backward(x1_, x2_, g3_, g1_, bn1_, prelu1_, learning_rate);
+    gpu_conv2d_backward_cudnn_adamw(input, g1_, g0_, conv1_, learning_rate, opt_config);
 #else
     conv5_.backward_momentum(x16_, g17_, g16_, learning_rate, opt_config);
-#endif
     
     up2_.backward(x15_, g16_, g15_);
     prelu4_.backward(x14_, g15_, g14_, learning_rate);
     bn4_.backward(x13_, g14_, g13_, learning_rate);
-#ifdef USE_OPTIMIZED_KERNELS
-    gpu_conv2d_backward_cudnn_adamw(x12_, g13_, g12_, conv4_, learning_rate, opt_config);
-#else
     conv4_.backward_momentum(x12_, g13_, g12_, learning_rate, opt_config);
-#endif
     
     up1_.backward(x11_, g12_, g11_);
     prelu3_.backward(x10_, g11_, g10_, learning_rate);
     bn3_.backward(x9_, g10_, g9_, learning_rate);
-#ifdef USE_OPTIMIZED_KERNELS
-    gpu_conv2d_backward_cudnn_adamw(x8_, g9_, g8_, conv3_, learning_rate, opt_config);
-#else
     conv3_.backward_momentum(x8_, g9_, g8_, learning_rate, opt_config);
-#endif
     
     pool2_.backward(x7_, g8_, g7_);
     prelu2_.backward(x6_, g7_, g6_, learning_rate);
     bn2_.backward(x5_, g6_, g5_, learning_rate);
-#ifdef USE_OPTIMIZED_KERNELS
-    gpu_conv2d_backward_cudnn_adamw(x4_, g5_, g4_, conv2_, learning_rate, opt_config);
-#else
     conv2_.backward_momentum(x4_, g5_, g4_, learning_rate, opt_config);
-#endif
     
     pool1_.backward(x3_, g4_, g3_);
     prelu1_.backward(x2_, g3_, g2_, learning_rate);
     bn1_.backward(x1_, g2_, g1_, learning_rate);
-#ifdef USE_OPTIMIZED_KERNELS
-    gpu_conv2d_backward_cudnn_adamw(input, g1_, g0_, conv1_, learning_rate, opt_config);
-#else
     conv1_.backward_momentum(input, g1_, g0_, learning_rate, opt_config);
 #endif
     

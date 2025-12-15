@@ -69,6 +69,17 @@ public:
     void backward(const GPUTensor4D& input, const GPUTensor4D& grad_output, GPUTensor4D& grad_input, float learning_rate);
     void copy_params_to_host(float* h_gamma, float* h_beta, float* h_mean, float* h_var) const;
     void copy_params_from_host(const float* h_gamma, const float* h_beta, const float* h_mean, const float* h_var);
+    float* get_gamma() const { return d_gamma_; }
+    float* get_beta() const { return d_beta_; }
+    float* get_cache_mean() const { return d_cache_mean_; }
+    float* get_cache_var() const { return d_cache_var_; }
+    float* get_running_mean() const { return d_running_mean_; }
+    float* get_running_var() const { return d_running_var_; }
+    float get_eps() const { return eps_; }
+    float get_momentum() const { return momentum_; }
+    int get_num_features() const { return num_features_; }
+    float* get_grad_gamma() const { return d_grad_gamma_; }
+    float* get_grad_beta() const { return d_grad_beta_; }
 private:
     int num_features_;
     float momentum_, eps_;
@@ -159,6 +170,14 @@ void gpu_conv2d_forward_cudnn(const GPUTensor4D& input, const float* d_weights, 
 void gpu_conv2d_forward_cudnn_wrapper(const GPUTensor4D& input, const GPUConv2DLayer& conv, GPUTensor4D& output);
 void gpu_conv2d_backward_cudnn_full(const GPUTensor4D& input, const GPUTensor4D& grad_output, GPUTensor4D& grad_input, const GPUConv2DLayer& conv, float learning_rate);
 void gpu_conv2d_backward_cudnn_adamw(const GPUTensor4D& input, const GPUTensor4D& grad_output, GPUTensor4D& grad_input, GPUConv2DLayer& conv, float learning_rate, const OptimizerConfig& opt_config);
+void gpu_batchnorm_prelu_fused_forward(const GPUTensor4D& input, GPUTensor4D& output,
+    GPUBatchNorm2D& bn, const GPUPReLULayer& prelu, bool training);
+void gpu_prelu_batchnorm_fused_backward(
+    const GPUTensor4D& bn_input,
+    const GPUTensor4D& prelu_input,
+    const GPUTensor4D& grad_output,
+    GPUTensor4D& grad_input,
+    GPUBatchNorm2D& bn, GPUPReLULayer& prelu, float learning_rate);
 #endif
 
 #endif
