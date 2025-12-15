@@ -1,236 +1,226 @@
 # CSC14120 - Parallel Programming: Autoencoder Feature Learning
 
-**HCMUS - Faculty of Information Technology**
+<p align="center">
+  <strong>Vietnam National University, Ho Chi Minh City</strong><br>
+  University of Science - Faculty of Information Technology
+</p>
 
-Convolutional Autoencoder for unsupervised feature learning on CIFAR-10, accelerated with CUDA.
+---
 
-## Project Overview
+## 📋 Project Overview
 
-This project implements a 4-phase autoencoder training pipeline:
+This project implements a **GPU-accelerated Convolutional Autoencoder** for unsupervised feature learning on CIFAR-10, achieving **~505× speedup** over CPU baseline and **70% classification accuracy** using extracted features with SVM.
 
-| Phase | Description | Build Target |
-|-------|-------------|--------------|
-| 1 | CPU Baseline | `cpu_train`, `cpu_train_omp` |
-| 2 | Naive GPU | `gpu_train` |
-| 3 | Optimized GPU | `gpu_train_opt` |
-| 4 | Full Pipeline (GPU + SVM) | `full_pipeline` |
+### Group Members
 
-## Quick Start
+| Member | Name | Student ID |
+|:------:|:-----|:-----------|
+| 1 | Le Dai Hoa | 22120108 |
+| 2 | Nguyen Tuong Bach Hy | 22120455 |
+| 3 | Le Hoang Vu | 22120461 |
+
+### Key Achievements
+
+| Metric | Target | Achieved | Status |
+|:-------|:-------|:---------|:------:|
+| GPU Speedup | >50× | **~505×** | ✅ Exceeded |
+| Classification Accuracy | >50% | **70%** | ✅ Exceeded |
+| Training Time (50K images) | <15 min | **~10.3 min** | ✅ Met |
+
+---
+
+## 🏗️ Implementation Phases
+
+| Phase | Description | Key Optimization | Speedup |
+|:-----:|:------------|:-----------------|:-------:|
+| **1** | CPU Baseline | OpenMP parallelization | 1× |
+| **2** | GPU Naive | Basic CUDA kernels | ~51× |
+| **3.1** | GPU Tiled | Shared memory tiling | ~505× |
+| **3.2** | GPU cuDNN | cuDNN library integration | ~482× |
+| **3.3** | GPU BCE | BCE loss + Sigmoid activation | ~292× |
+| **4** | SVM Classification | cuML GPU-accelerated SVM | - |
+
+### Phase 3 Comparison
+
+| Version | Training Time | Final Loss | SVM Accuracy | Best For |
+|:--------|:--------------|:-----------|:-------------|:---------|
+| Tiled | ~10.3 min | 0.0114 | ~67% | Learning CUDA optimization |
+| cuDNN | ~10.8 min | 0.0114 | ~67% | Production deployment |
+| **BCE** | ~17.8 min | 0.55 | **~70%** | Best classification accuracy |
+
+---
+
+## 🧠 Network Architecture
+
+```
+INPUT: (N, 3, 32, 32) - CIFAR-10 RGB images
+  ↓
+ENCODER:
+  Conv2D(3→256, 3×3, pad=1) + ReLU  → (N, 256, 32, 32)
+  MaxPool(2×2)                       → (N, 256, 16, 16)
+  Conv2D(256→128, 3×3, pad=1) + ReLU → (N, 128, 16, 16)
+  MaxPool(2×2)                       → (N, 128, 8, 8)
+  ↓
+LATENT: (N, 128, 8, 8) = 8,192 features
+  ↓
+DECODER:
+  Conv2D(128→128, 3×3, pad=1) + ReLU → (N, 128, 8, 8)
+  UpSample(2×)                        → (N, 128, 16, 16)
+  Conv2D(128→256, 3×3, pad=1) + ReLU  → (N, 256, 16, 16)
+  UpSample(2×)                        → (N, 256, 32, 32)
+  Conv2D(256→3, 3×3, pad=1) + Sigmoid → (N, 3, 32, 32)
+  ↓
+OUTPUT: (N, 3, 32, 32) - Reconstructed images
+
+Total Parameters: 751,875
+```
+
+---
+
+## 📊 Results Summary
+
+### Training Performance
+
+| Phase | Training Time (50K) | Speedup vs CPU | Final Loss |
+|:------|:--------------------|:---------------|:-----------|
+| CPU Baseline | ~86.7 hours | 1.0× | 0.2646 |
+| GPU Naive | ~102.1 min | ~51× | 0.0224 |
+| GPU Tiled | ~10.3 min | **~505×** | 0.0114 |
+| GPU cuDNN | ~10.8 min | ~482× | 0.0114 |
+| GPU BCE | ~17.8 min | ~292× | 0.4648 |
+
+### Classification Accuracy (SVM on Extracted Features)
+
+| Weights Source | Test Accuracy | Best Class | Worst Class |
+|:---------------|:--------------|:-----------|:------------|
+| Phase 1 CPU | 68.0% | ship | cat |
+| Phase 2 GPU Naive | 67.0% | ship | cat |
+| Phase 3 Tiled | 66.6% | ship | cat |
+| Phase 3 cuDNN | 66.6% | ship | cat |
+| **Phase 3 BCE** | **70.5%** | ship (~80%) | cat (~56%) |
+
+---
+
+## 🚀 Quick Start
 
 ```bash
-# 1. Download CIFAR-10 dataset
+# 1. Clone repository
+git clone https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder.git
+cd Homogenous-AutoEncoder
+
+# 2. Download CIFAR-10 dataset
 cd data
 curl -O https://www.cs.toronto.edu/~kriz/cifar-10-binary.tar.gz
 tar -xzf cifar-10-binary.tar.gz
 mv cifar-10-batches-bin/* .
 cd ..
 
-# 2. Build and run Phase 1 (CPU)
-make cpu_train_omp
-./cpu_train_omp data 5 32 0.001 cpu_training.log 1000 1
-
-# 3. Build and run Phase 2 (GPU Naive)
-make gpu_train
-./gpu_train --data data --epochs 20 --batch 64
-
-# 4. Build and run Phase 3 (GPU Optimized)
-make gpu_train_opt
+# 3. Build and run (choose one)
+make gpu_train_opt           # Phase 3 optimized
 ./gpu_train_opt --data data --epochs 20 --batch 64
 
-# 5. Build and run Phase 4 (Full Pipeline with SVM)
-make full_pipeline
+make full_pipeline           # Phase 4 with SVM
 ./full_pipeline --data data --epochs 20 --batch 64
 ```
 
-## Phase Details
+---
 
-### Phase 1: CPU Baseline
-
-**Build:**
-```bash
-make cpu_train      # Without OpenMP
-make cpu_train_omp  # With OpenMP parallelization
-```
-
-**Features:**
-- OpenMP parallelization for Conv2D forward/backward
-- Loop unrolling for 3x3 kernel convolutions
-- SIMD vectorization for ReLU and MSE operations
-- Thread-local gradient accumulators
-
-**Usage:**
-```bash
-./cpu_train <data_dir> <epochs> <batch_size> <lr> <log_file> <max_images> <use_openmp> [csv_file]
-# Example:
-./cpu_train_omp data 5 32 0.001 cpu_training.log 5000 1 cpu_training.csv
-```
-
-### Phase 2: Naive GPU Implementation
-
-**Build:**
-```bash
-make gpu_train
-```
-
-**Features:**
-- Basic CUDA kernels for all layers
-- 2D thread blocks (16×16) for spatial operations
-- Global memory access patterns
-
-**Usage:**
-```bash
-./gpu_train [options]
-  --data <dir>         Data directory (default: data)
-  --epochs <n>         Training epochs (default: 20)
-  --batch <n>          Batch size (default: 64)
-  --lr <f>             Learning rate (default: 0.001)
-  --log <file>         CSV log file
-  --log-txt <file>     TXT log file
-  --max-images <n>     Limit training images (0=all)
-  --load-weights <f>   Load pretrained weights
-  --save-weights <f>   Save weights after training
-```
-
-### Phase 3: Optimized GPU Implementation
-
-**Build:**
-```bash
-make gpu_train_opt
-```
-
-**Optimizations Applied:**
-1. **Shared Memory Tiling**: Reduces global memory access in convolution
-2. **Vectorized Memory Access**: float4 loads for ReLU operations
-3. **Warp Shuffle Reduction**: Fast MSE loss computation
-4. **Loop Unrolling**: Optimized 3×3 kernel and 2×2 pooling
-5. **Kernel Fusion Ready**: Conv+ReLU fusion kernels available
-
-### Phase 4: Full Pipeline (GPU + SVM)
-
-**Build:**
-```bash
-# First, setup LIBSVM
-git submodule add https://github.com/cjlin1/libsvm external/libsvm
-make full_pipeline
-```
-
-**Features:**
-- Feature extraction using trained encoder
-- SVM classification with RBF kernel
-- Confusion matrix output
-
-## Network Architecture
-
-```
-INPUT: (N, 3, 32, 32)
-  ↓
-ENCODER:
-  Conv2D(3→256, 3×3, pad=1) + ReLU → (N, 256, 32, 32)
-  MaxPool(2×2)                     → (N, 256, 16, 16)
-  Conv2D(256→128, 3×3, pad=1) + ReLU → (N, 128, 16, 16)
-  MaxPool(2×2)                     → (N, 128, 8, 8)
-  ↓
-LATENT: (N, 128, 8, 8) = 8,192 features
-  ↓
-DECODER:
-  Conv2D(128→128, 3×3, pad=1) + ReLU → (N, 128, 8, 8)
-  UpSample(2×)                      → (N, 128, 16, 16)
-  Conv2D(128→256, 3×3, pad=1) + ReLU → (N, 256, 16, 16)
-  UpSample(2×)                      → (N, 256, 32, 32)
-  Conv2D(256→3, 3×3, pad=1)         → (N, 3, 32, 32)
-  ↓
-OUTPUT: (N, 3, 32, 32)
-
-Total Parameters: 751,875
-```
-
-## Performance Targets
-
-| Metric | Target |
-|--------|--------|
-| Training time (GPU) | < 10 minutes |
-| Feature extraction | < 20 sec for 60K images |
-| GPU speedup vs CPU | > 20× |
-| Test accuracy | 60-65% |
-
-## Verification
-
-Verify GPU implementation correctness:
-```bash
-make verify_gpu
-./verify_gpu data
-```
-
-## Project Structure
+## 📁 Project Structure
 
 ```
 Homogenous-AutoEncoder/
 ├── include/
-│   ├── autoencoder.h      # CPU autoencoder class
-│   ├── gpu_autoencoder.h  # GPU autoencoder class
-│   ├── layer.h            # CPU layer definitions
-│   ├── gpu_layer.h        # GPU layer definitions
-│   ├── dataset.h          # CIFAR-10 data loading
-│   ├── cuda_utils.h       # CUDA error checking
-│   └── svm_wrapper.h      # LIBSVM interface
+│   ├── autoencoder.h       # CPU autoencoder class
+│   ├── gpu_autoencoder.h   # GPU autoencoder class
+│   ├── layer.h             # CPU layer definitions
+│   ├── gpu_layer.h         # GPU layer definitions
+│   ├── dataset.h           # CIFAR-10 data loading
+│   └── cuda_utils.h        # CUDA error checking
 ├── src/
-│   ├── main.cpp           # CPU training (Phase 1)
-│   ├── main_gpu.cu        # GPU training (Phase 2-4)
-│   ├── autoencoder.cpp    # CPU autoencoder
-│   ├── gpu_autoencoder.cu # GPU autoencoder
-│   ├── layers_cpu.cpp     # CPU layer implementations
-│   ├── layers_gpu.cu      # Naive GPU kernels (Phase 2)
-│   ├── layers_gpu_opt.cu  # Optimized GPU kernels (Phase 3)
-│   ├── dataset.cpp        # Data loading
-│   ├── svm_wrapper.cpp    # SVM classification (Phase 4)
-│   └── verify_gpu.cu      # GPU verification tool
-├── data/                  # CIFAR-10 binary files
+│   ├── main.cpp            # CPU training (Phase 1)
+│   ├── main_gpu.cu         # GPU training (Phase 2-3)
+│   ├── main_phase4.cu      # Full pipeline with SVM (Phase 4)
+│   ├── autoencoder.cpp     # CPU autoencoder
+│   ├── gpu_autoencoder.cu  # GPU autoencoder
+│   ├── layers_cpu.cpp      # CPU layer implementations
+│   ├── layers_gpu.cu       # Naive GPU kernels (Phase 2)
+│   ├── layers_gpu_opt.cu   # Optimized GPU kernels (Phase 3)
+│   └── dataset.cpp         # Data loading
+├── notebooks/              # Jupyter notebooks (see below)
+├── docs/                   # PDF reports
+├── results/                # Training logs and weights
+├── data/                   # CIFAR-10 binary files
 ├── Makefile
 └── README.md
 ```
 
-## Build Configuration
+---
 
-Check your build configuration:
-```bash
-make info
-```
+## 📓 Notebooks
 
-### Requirements
+All notebooks are available in the [`feat/enhancement`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/tree/feat/enhancement/notebooks) branch:
 
-**CPU Build:**
-- C++17 compiler (GCC 9+, Clang 10+, MSVC 2019+)
-- OpenMP (optional, for parallel CPU execution)
+### Phase 2: GPU Naive
+- [`Phase2_Colab.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase2_Colab.ipynb)
+- [`Phase2_Kaggle.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase2_Kaggle.ipynb)
+
+### Phase 3: GPU Optimized
+- [`Phase3_Colab.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase3_Colab.ipynb) - Tiled convolution
+- [`Phase3_Kaggle.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase3_Kaggle.ipynb)
+- [`Phase3_Colab_BCE.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase3_Colab_BCE.ipynb) - BCE loss version
+- [`Phase3_Kaggle_BCE.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase3_Kaggle_BCE.ipynb)
+- [`enhancement/Phase3_Colab_Tiled.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/enhancement/Phase3_Colab_Tiled.ipynb)
+
+### Phase 4: SVM Classification
+- [`Phase4_Colab.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase4_Colab.ipynb)
+- [`Phase4_Kaggle.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase4_Kaggle.ipynb)
+- [`Phase4_Kaggle_PCA.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase4_Kaggle_PCA.ipynb) - With PCA
+- [`phase3-4-kaggle-bce-cuml.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/phase3-4-kaggle-bce-cuml.ipynb) - BCE + cuML SVM
+
+### Full Report
+- [`report.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/report/notebooks/report.ipynb) - Complete project report with all phases
+
+---
+
+## 🔧 Build Targets
+
+| Target | Description | Command |
+|:-------|:------------|:--------|
+| `cpu_train` | CPU baseline (no OpenMP) | `make cpu_train` |
+| `cpu_train_omp` | CPU with OpenMP | `make cpu_train_omp` |
+| `gpu_train` | GPU naive (Phase 2) | `make gpu_train` |
+| `gpu_train_opt` | GPU optimized (Phase 3) | `make gpu_train_opt` |
+| `full_pipeline` | Full pipeline with SVM (Phase 4) | `make full_pipeline` |
+| `feature_extractor` | Extract features only | `make feature_extractor` |
+
+---
+
+## 📋 Requirements
 
 **GPU Build:**
 - CUDA Toolkit 11.0+
 - NVIDIA GPU (compute capability 6.0+)
+- cuDNN (optional, for cuDNN version)
 
-**SVM (Phase 4):**
-- LIBSVM library
+**CPU Build:**
+- C++17 compiler (GCC 9+, Clang 10+, MSVC 2019+)
+- OpenMP (optional)
 
-### Platform-Specific Setup
+**SVM Classification (Phase 4):**
+- cuML (recommended for GPU)
+- ThunderSVM or sklearn (alternatives)
 
-**Linux:**
-```bash
-sudo apt-get install build-essential
-sudo apt-get install nvidia-cuda-toolkit  # For GPU
-```
+---
 
-**macOS:**
-```bash
-xcode-select --install
-brew install libomp  # For OpenMP
-# Note: CUDA not supported on recent macOS
-```
-
-**Windows (MSYS2):**
-```bash
-pacman -S mingw-w64-x86_64-gcc make
-```
-
-## References
+## 📚 References
 
 - [CIFAR-10 Dataset](https://www.cs.toronto.edu/~kriz/cifar.html)
-- [LIBSVM](https://www.csie.ntu.edu.tw/~cjlin/libsvm/)
+- [cuDNN Documentation](https://docs.nvidia.com/deeplearning/cudnn/)
+- [cuML SVM](https://docs.rapids.ai/api/cuml/stable/)
 - Hinton & Salakhutdinov (2006). "Reducing the Dimensionality of Data with Neural Networks"
+
+---
+
+## 📄 License
+
+This project is for educational purposes as part of CSC14120 - Parallel Programming course.
