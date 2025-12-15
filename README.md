@@ -68,23 +68,23 @@ This project implements a **GPU-accelerated Convolutional Autoencoder** for unsu
 INPUT: (N, 3, 32, 32) - CIFAR-10 RGB images
   ↓
 ENCODER:
-  Conv2D(3→256, 3×3, pad=1) + ReLU  → (N, 256, 32, 32)
-  MaxPool(2×2)                       → (N, 256, 16, 16)
-  Conv2D(256→128, 3×3, pad=1) + ReLU → (N, 128, 16, 16)
-  MaxPool(2×2)                       → (N, 128, 8, 8)
+  Conv2D(3→256, 3×3, pad=1) + BatchNorm + PReLU  → (N, 256, 32, 32)
+  MaxPool(2×2)                                    → (N, 256, 16, 16)
+  Conv2D(256→128, 3×3, pad=1) + BatchNorm + PReLU → (N, 128, 16, 16)
+  MaxPool(2×2)                                    → (N, 128, 8, 8)
   ↓
 LATENT: (N, 128, 8, 8) = 8,192 features
   ↓
 DECODER:
-  Conv2D(128→128, 3×3, pad=1) + ReLU → (N, 128, 8, 8)
-  UpSample(2×)                        → (N, 128, 16, 16)
-  Conv2D(128→256, 3×3, pad=1) + ReLU  → (N, 256, 16, 16)
-  UpSample(2×)                        → (N, 256, 32, 32)
-  Conv2D(256→3, 3×3, pad=1) + Sigmoid → (N, 3, 32, 32)
+  Conv2D(128→128, 3×3, pad=1) + BatchNorm + PReLU → (N, 128, 8, 8)
+  UpSample(2×)                                     → (N, 128, 16, 16)
+  Conv2D(128→256, 3×3, pad=1) + BatchNorm + PReLU  → (N, 256, 16, 16)
+  UpSample(2×)                                     → (N, 256, 32, 32)
+  Conv2D(256→3, 3×3, pad=1) + Sigmoid              → (N, 3, 32, 32)
   ↓
 OUTPUT: (N, 3, 32, 32) - Reconstructed images
 
-Total Parameters: 751,875
+Total Parameters: ~755K (includes BatchNorm γ/β and PReLU α)
 ```
 
 ---
