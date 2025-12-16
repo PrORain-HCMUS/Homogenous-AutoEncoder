@@ -1,5 +1,6 @@
 #ifdef USE_OPTIMIZED_KERNELS
 
+#include <float.h>
 #include "gpu_layer.h"
 #include "cuda_utils.h"
 #include <cuda_runtime.h>
@@ -42,6 +43,107 @@ void gpu_conv2d_forward_cudnn(const GPUTensor4D& input, const float* d_weights, 
     cudnnDestroyTensorDescriptor(input_desc); cudnnDestroyTensorDescriptor(output_desc); cudnnDestroyTensorDescriptor(bias_desc);
     cudnnDestroyFilterDescriptor(filter_desc); cudnnDestroyConvolutionDescriptor(conv_desc);
 }
+
+#ifdef USE_FP16
+#include <cuda_fp16.h>
+
+static __half* d_fp16_workspace = nullptr;
+static size_t fp16_workspace_size = 0;
+
+void ensure_fp16_workspace(size_t required) {
+    if (d_fp16_workspace == nullptr || fp16_workspace_size < required) {
+        if (d_fp16_workspace) cudaFree(d_fp16_workspace);
+        fp16_workspace_size = required * 2;
+        CUDA_CHECK(cudaMalloc(&d_fp16_workspace, fp16_workspace_size));
+    }
+}
+
+void cleanup_fp16_workspace() {
+    if (d_fp16_workspace) { cudaFree(d_fp16_workspace); d_fp16_workspace = nullptr; fp16_workspace_size = 0; }
+}
+
+__global__ void convert_fp32_to_fp16_kernel(const float* input, __half* output, size_t n) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) output[idx] = __float2half(input[idx]);
+}
+
+__global__ void convert_fp16_to_fp32_kernel(const __half* input, float* output, size_t n) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) output[idx] = __half2float(input[idx]);
+}
+
+void gpu_conv2d_forward_cudnn_fp16(const GPUTensor4D& input, const float* d_weights, const float* d_bias, 
+                                    GPUTensor4D& output, int in_c, int out_c, int k, int stride, int padding) {
+    init_cudnn();
+    int out_h = (input.h + 2 * padding - k) / stride + 1;
+    int out_w = (input.w + 2 * padding - k) / stride + 1;
+    if (output.n != input.n || output.c != out_c || output.h != out_h || output.w != out_w)
+        output.allocate(input.n, out_c, out_h, out_w);
+    
+    size_t input_size = input.size();
+    size_t output_size = static_cast<size_t>(input.n) * out_c * out_h * out_w;
+    size_t weights_size = static_cast<size_t>(out_c) * in_c * k * k;
+    size_t total_fp16 = (input_size + output_size + weights_size + out_c) * sizeof(__half);
+    ensure_fp16_workspace(total_fp16);
+    
+    __half* d_input_fp16 = d_fp16_workspace;
+    __half* d_output_fp16 = d_input_fp16 + input_size;
+    __half* d_weights_fp16 = d_output_fp16 + output_size;
+    __half* d_bias_fp16 = d_weights_fp16 + weights_size;
+    
+    convert_fp32_to_fp16_kernel<<<(input_size + 255) / 256, 256>>>(input.d_data, d_input_fp16, input_size);
+    convert_fp32_to_fp16_kernel<<<(weights_size + 255) / 256, 256>>>(d_weights, d_weights_fp16, weights_size);
+    convert_fp32_to_fp16_kernel<<<(out_c + 255) / 256, 256>>>(d_bias, d_bias_fp16, out_c);
+    CUDA_CHECK(cudaGetLastError());
+    
+    cudnnTensorDescriptor_t input_desc, output_desc, bias_desc;
+    cudnnFilterDescriptor_t filter_desc;
+    cudnnConvolutionDescriptor_t conv_desc;
+    cudnnCreateTensorDescriptor(&input_desc);
+    cudnnCreateTensorDescriptor(&output_desc);
+    cudnnCreateTensorDescriptor(&bias_desc);
+    cudnnCreateFilterDescriptor(&filter_desc);
+    cudnnCreateConvolutionDescriptor(&conv_desc);
+    
+    cudnnSetTensor4dDescriptor(input_desc, CUDNN_TENSOR_NCHW, CUDNN_DATA_HALF, input.n, in_c, input.h, input.w);
+    cudnnSetTensor4dDescriptor(output_desc, CUDNN_TENSOR_NCHW, CUDNN_DATA_HALF, input.n, out_c, out_h, out_w);
+    cudnnSetTensor4dDescriptor(bias_desc, CUDNN_TENSOR_NCHW, CUDNN_DATA_HALF, 1, out_c, 1, 1);
+    cudnnSetFilter4dDescriptor(filter_desc, CUDNN_DATA_HALF, CUDNN_TENSOR_NCHW, out_c, in_c, k, k);
+    cudnnSetConvolution2dDescriptor(conv_desc, padding, padding, stride, stride, 1, 1, CUDNN_CROSS_CORRELATION, CUDNN_DATA_FLOAT);
+    cudnnSetConvolutionMathType(conv_desc, CUDNN_TENSOR_OP_MATH);
+    
+    cudnnConvolutionFwdAlgoPerf_t algo_perf;
+    int returned_algo_count;
+    cudnnGetConvolutionForwardAlgorithm_v7(cudnn_handle, input_desc, filter_desc, conv_desc, output_desc, 1, &returned_algo_count, &algo_perf);
+    
+    size_t workspace_size = 0;
+    cudnnGetConvolutionForwardWorkspaceSize(cudnn_handle, input_desc, filter_desc, conv_desc, output_desc, algo_perf.algo, &workspace_size);
+    void* d_workspace = nullptr;
+    if (workspace_size > 0) cudaMalloc(&d_workspace, workspace_size);
+    
+    float alpha = 1.0f, beta = 0.0f;
+    cudnnConvolutionForward(cudnn_handle, &alpha, input_desc, d_input_fp16, filter_desc, d_weights_fp16,
+                            conv_desc, algo_perf.algo, d_workspace, workspace_size, &beta, output_desc, d_output_fp16);
+    beta = 1.0f;
+    cudnnAddTensor(cudnn_handle, &alpha, bias_desc, d_bias_fp16, &beta, output_desc, d_output_fp16);
+    
+    convert_fp16_to_fp32_kernel<<<(output_size + 255) / 256, 256>>>(d_output_fp16, output.d_data, output_size);
+    CUDA_CHECK(cudaGetLastError());
+    
+    if (d_workspace) cudaFree(d_workspace);
+    cudnnDestroyTensorDescriptor(input_desc);
+    cudnnDestroyTensorDescriptor(output_desc);
+    cudnnDestroyTensorDescriptor(bias_desc);
+    cudnnDestroyFilterDescriptor(filter_desc);
+    cudnnDestroyConvolutionDescriptor(conv_desc);
+}
+
+void gpu_conv2d_forward_cudnn_wrapper_fp16(const GPUTensor4D& input, const GPUConv2DLayer& conv, GPUTensor4D& output) {
+    gpu_conv2d_forward_cudnn_fp16(input, conv.get_weights(), conv.get_bias(), output,
+                                   conv.get_in_channels(), conv.get_out_channels(),
+                                   conv.get_kernel_size(), conv.get_stride(), conv.get_padding());
+}
+#endif
 
 void gpu_conv2d_backward_cudnn(const GPUTensor4D& input, const GPUTensor4D& grad_output, const float* d_weights, float* d_grad_weights, float* d_grad_bias, GPUTensor4D& grad_input, int in_c, int out_c, int k, int stride, int padding, float learning_rate) {
     init_cudnn();
@@ -567,6 +669,31 @@ __global__ void batchnorm_prelu_fused_forward_kernel(
     output[idx] = (bn_result > 0.0f) ? bn_result : prelu_alpha[c] * bn_result;
 }
 
+__global__ void batchnorm_prelu_fused_forward_with_intermediate_kernel(
+    const float* __restrict__ input,
+    float* __restrict__ bn_output,
+    float* __restrict__ prelu_output,
+    const float* __restrict__ bn_gamma,
+    const float* __restrict__ bn_beta,
+    const float* __restrict__ bn_mean,
+    const float* __restrict__ bn_var,
+    const float* __restrict__ prelu_alpha,
+    int N, int C, int H, int W, float eps
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = N * C * H * W;
+    if (idx >= total) return;
+    
+    int c = (idx / (H * W)) % C;
+    float x = input[idx];
+    
+    float inv_std = rsqrtf(bn_var[c] + eps);
+    float bn_result = bn_gamma[c] * (x - bn_mean[c]) * inv_std + bn_beta[c];
+    
+    bn_output[idx] = bn_result;
+    prelu_output[idx] = (bn_result > 0.0f) ? bn_result : prelu_alpha[c] * bn_result;
+}
+
 void gpu_batchnorm_prelu_fused_forward(const GPUTensor4D& input, GPUTensor4D& output,
     GPUBatchNorm2D& bn, const GPUPReLULayer& prelu, bool training) {
     
@@ -594,12 +721,10 @@ void gpu_batchnorm_prelu_fused_forward(const GPUTensor4D& input, GPUTensor4D& ou
         mean_ptr = bn.get_cache_mean();
         var_ptr = bn.get_cache_var();
     } else {
-        // Use running statistics for inference
         mean_ptr = bn.get_running_mean();
         var_ptr = bn.get_running_var();
     }
     
-    // Fused normalize + PReLU
     batchnorm_prelu_fused_forward_kernel<<<(total + 255) / 256, 256>>>(
         input.d_data, output.d_data,
         bn.get_gamma(), bn.get_beta(),
@@ -607,6 +732,214 @@ void gpu_batchnorm_prelu_fused_forward(const GPUTensor4D& input, GPUTensor4D& ou
         prelu.get_alpha(),
         input.n, input.c, input.h, input.w, eps);
     CUDA_CHECK(cudaGetLastError());
+}
+
+void gpu_batchnorm_prelu_fused_forward_with_intermediate(
+    const GPUTensor4D& input, GPUTensor4D& bn_output, GPUTensor4D& prelu_output,
+    GPUBatchNorm2D& bn, const GPUPReLULayer& prelu, bool training) {
+    
+    if (bn_output.n != input.n || bn_output.c != input.c || bn_output.h != input.h || bn_output.w != input.w)
+        bn_output.allocate(input.n, input.c, input.h, input.w);
+    if (prelu_output.n != input.n || prelu_output.c != input.c || prelu_output.h != input.h || prelu_output.w != input.w)
+        prelu_output.allocate(input.n, input.c, input.h, input.w);
+    
+    int total = input.n * input.c * input.h * input.w;
+    int num_features = bn.get_num_features();
+    float eps = bn.get_eps();
+    
+    const float* mean_ptr;
+    const float* var_ptr;
+    
+    if (training) {
+        batchnorm_compute_mean_var_fused_kernel<<<num_features, 256, 2 * 256 * sizeof(float)>>>(
+            input.d_data, bn.get_cache_mean(), bn.get_cache_var(), input.n, input.c, input.h, input.w);
+        CUDA_CHECK(cudaGetLastError());
+        
+        batchnorm_update_running_kernel<<<(num_features + 255) / 256, 256>>>(
+            bn.get_running_mean(), bn.get_cache_mean(), bn.get_momentum(), num_features);
+        batchnorm_update_running_kernel<<<(num_features + 255) / 256, 256>>>(
+            bn.get_running_var(), bn.get_cache_var(), bn.get_momentum(), num_features);
+        CUDA_CHECK(cudaGetLastError());
+        
+        mean_ptr = bn.get_cache_mean();
+        var_ptr = bn.get_cache_var();
+    } else {
+        mean_ptr = bn.get_running_mean();
+        var_ptr = bn.get_running_var();
+    }
+    
+    batchnorm_prelu_fused_forward_with_intermediate_kernel<<<(total + 255) / 256, 256>>>(
+        input.d_data, bn_output.d_data, prelu_output.d_data,
+        bn.get_gamma(), bn.get_beta(),
+        mean_ptr, var_ptr,
+        prelu.get_alpha(),
+        input.n, input.c, input.h, input.w, eps);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+__global__ void batchnorm_prelu_maxpool_fused_kernel(
+    const float* __restrict__ input,
+    float* __restrict__ output,
+    const float* __restrict__ bn_gamma,
+    const float* __restrict__ bn_beta,
+    const float* __restrict__ bn_mean,
+    const float* __restrict__ bn_var,
+    const float* __restrict__ prelu_alpha,
+    int N, int C, int in_H, int in_W,
+    int pool_k, int pool_stride, float eps
+) {
+    int out_H = (in_H - pool_k) / pool_stride + 1;
+    int out_W = (in_W - pool_k) / pool_stride + 1;
+    
+    int ow = blockIdx.x * blockDim.x + threadIdx.x;
+    int oh = blockIdx.y * blockDim.y + threadIdx.y;
+    int c = blockIdx.z % C;
+    int n = blockIdx.z / C;
+    
+    if (ow >= out_W || oh >= out_H || n >= N) return;
+    
+    float inv_std = rsqrtf(bn_var[c] + eps);
+    float gamma = bn_gamma[c];
+    float beta = bn_beta[c];
+    float mean = bn_mean[c];
+    float alpha = prelu_alpha[c];
+    
+    float max_val = -1e30f;
+    for (int kh = 0; kh < pool_k; ++kh) {
+        for (int kw = 0; kw < pool_k; ++kw) {
+            int ih = oh * pool_stride + kh;
+            int iw = ow * pool_stride + kw;
+            if (ih < in_H && iw < in_W) {
+                float x = input[((static_cast<size_t>(n) * C + c) * in_H + ih) * in_W + iw];
+                float bn_out = gamma * (x - mean) * inv_std + beta;
+                float prelu_out = (bn_out > 0.0f) ? bn_out : alpha * bn_out;
+                max_val = fmaxf(max_val, prelu_out);
+            }
+        }
+    }
+    output[((static_cast<size_t>(n) * C + c) * out_H + oh) * out_W + ow] = max_val;
+}
+
+void gpu_batchnorm_prelu_maxpool_fused_forward(
+    const GPUTensor4D& input, GPUTensor4D& output,
+    GPUBatchNorm2D& bn, const GPUPReLULayer& prelu,
+    int pool_k, int pool_stride, bool training
+) {
+    int out_h = (input.h - pool_k) / pool_stride + 1;
+    int out_w = (input.w - pool_k) / pool_stride + 1;
+    
+    if (output.n != input.n || output.c != input.c || output.h != out_h || output.w != out_w)
+        output.allocate(input.n, input.c, out_h, out_w);
+    
+    int num_features = bn.get_num_features();
+    float eps = bn.get_eps();
+    
+    const float* mean_ptr;
+    const float* var_ptr;
+    
+    if (training) {
+        batchnorm_compute_mean_var_fused_kernel<<<num_features, 256, 2 * 256 * sizeof(float)>>>(
+            input.d_data, bn.get_cache_mean(), bn.get_cache_var(), input.n, input.c, input.h, input.w);
+        CUDA_CHECK(cudaGetLastError());
+        
+        batchnorm_update_running_kernel<<<(num_features + 255) / 256, 256>>>(
+            bn.get_running_mean(), bn.get_cache_mean(), bn.get_momentum(), num_features);
+        batchnorm_update_running_kernel<<<(num_features + 255) / 256, 256>>>(
+            bn.get_running_var(), bn.get_cache_var(), bn.get_momentum(), num_features);
+        CUDA_CHECK(cudaGetLastError());
+        
+        mean_ptr = bn.get_cache_mean();
+        var_ptr = bn.get_cache_var();
+    } else {
+        mean_ptr = bn.get_running_mean();
+        var_ptr = bn.get_running_var();
+    }
+    
+    dim3 block(16, 16);
+    dim3 grid((out_w + 15) / 16, (out_h + 15) / 16, input.n * input.c);
+    batchnorm_prelu_maxpool_fused_kernel<<<grid, block>>>(
+        input.d_data, output.d_data,
+        bn.get_gamma(), bn.get_beta(),
+        mean_ptr, var_ptr,
+        prelu.get_alpha(),
+        input.n, input.c, input.h, input.w,
+        pool_k, pool_stride, eps);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+__global__ void upsample_conv_fused_kernel(
+    const float* __restrict__ input,
+    const float* __restrict__ weights,
+    const float* __restrict__ bias,
+    float* __restrict__ output,
+    int N, int in_C, int in_H, int in_W,
+    int out_C, int out_H, int out_W,
+    int k, int stride, int padding, int scale
+) {
+    int ow = blockIdx.x * blockDim.x + threadIdx.x;
+    int oh = blockIdx.y * blockDim.y + threadIdx.y;
+    int oc = blockIdx.z % out_C;
+    int n = blockIdx.z / out_C;
+    
+    if (ow >= out_W || oh >= out_H || n >= N) return;
+    
+    int up_H = in_H * scale;
+    int up_W = in_W * scale;
+    
+    float sum = bias[oc];
+    
+    for (int ic = 0; ic < in_C; ++ic) {
+        for (int kh = 0; kh < k; ++kh) {
+            for (int kw = 0; kw < k; ++kw) {
+                int up_h = oh * stride + kh - padding;
+                int up_w = ow * stride + kw - padding;
+                
+                if (up_h >= 0 && up_h < up_H && up_w >= 0 && up_w < up_W) {
+                    int ih = up_h / scale;
+                    int iw = up_w / scale;
+                    
+                    float val = input[((static_cast<size_t>(n) * in_C + ic) * in_H + ih) * in_W + iw];
+                    float w = weights[((static_cast<size_t>(oc) * in_C + ic) * k + kh) * k + kw];
+                    sum += val * w;
+                }
+            }
+        }
+    }
+    
+    output[((static_cast<size_t>(n) * out_C + oc) * out_H + oh) * out_W + ow] = sum;
+}
+
+void gpu_upsample_conv_fused_forward(
+    const GPUTensor4D& input,
+    const float* weights, const float* bias,
+    GPUTensor4D& output,
+    int in_c, int out_c, int k, int stride, int padding, int scale
+) {
+    int up_h = input.h * scale;
+    int up_w = input.w * scale;
+    int out_h = (up_h + 2 * padding - k) / stride + 1;
+    int out_w = (up_w + 2 * padding - k) / stride + 1;
+    
+    if (output.n != input.n || output.c != out_c || output.h != out_h || output.w != out_w)
+        output.allocate(input.n, out_c, out_h, out_w);
+    
+    dim3 block(16, 16);
+    dim3 grid((out_w + 15) / 16, (out_h + 15) / 16, input.n * out_c);
+    upsample_conv_fused_kernel<<<grid, block>>>(
+        input.d_data, weights, bias, output.d_data,
+        input.n, in_c, input.h, input.w,
+        out_c, out_h, out_w,
+        k, stride, padding, scale);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void gpu_upsample_conv_fused_forward_wrapper(
+    const GPUTensor4D& input, const GPUConv2DLayer& conv, GPUTensor4D& output, int scale
+) {
+    gpu_upsample_conv_fused_forward(
+        input, conv.get_weights(), conv.get_bias(), output,
+        conv.get_in_channels(), conv.get_out_channels(),
+        conv.get_kernel_size(), conv.get_stride(), conv.get_padding(), scale);
 }
 
 __global__ void prelu_batchnorm_compute_sums_fused_kernel(
@@ -699,54 +1032,260 @@ __global__ void prelu_batchnorm_backward_fused_kernel(
 ) {
     extern __shared__ float smem[];
     float* s_grad_gamma = smem;
-    float* s_grad_beta = smem + C;
+    float* s_grad_beta = smem + blockDim.x;
+    
+    int c = blockIdx.x;
+    if (c >= C) return;
     
     int tid = threadIdx.x;
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total = N * C * H * W;
+    int spatial = H * W;
+    int total_per_channel = N * spatial;
     
-    for (int i = tid; i < C; i += blockDim.x) {
-        s_grad_gamma[i] = 0.0f;
-        s_grad_beta[i] = 0.0f;
-    }
-    __syncthreads();
+    float m = bn_mean[c];
+    float inv_std = rsqrtf(bn_var[c] + eps);
+    float gamma_c = bn_gamma[c];
+    float alpha_c = prelu_alpha[c];
+    float sdy = sum_dy[c];
+    float sdy_xhat = sum_dy_xhat[c];
+    float M = static_cast<float>(total_per_channel);
     
-    if (idx < total) {
-        int c = (idx / (H * W)) % C;
-        int M = N * H * W;
+    float local_grad_gamma = 0.0f;
+    float local_grad_beta = 0.0f;
+    
+    for (int i = tid; i < total_per_channel; i += blockDim.x) {
+        int n = i / spatial;
+        int hw = i % spatial;
+        size_t idx = ((static_cast<size_t>(n) * C + c) * H + hw / W) * W + hw % W;
         
         float go = grad_output[idx];
         float prelu_in = prelu_input[idx];
         float bn_in = bn_input[idx];
-        float alpha_c = prelu_alpha[c];
         
         float prelu_grad = (prelu_in > 0.0f) ? go : alpha_c * go;
+        float x_hat = (bn_in - m) * inv_std;
         
-        float inv_std = rsqrtf(bn_var[c] + eps);
-        float x_hat = (bn_in - bn_mean[c]) * inv_std;
+        grad_input[idx] = gamma_c * inv_std * (prelu_grad - sdy / M - x_hat * sdy_xhat / M);
         
-        grad_input[idx] = bn_gamma[c] * inv_std * (prelu_grad - sum_dy[c] / M - x_hat * sum_dy_xhat[c] / M);
-        
-        atomicAdd(&s_grad_gamma[c], prelu_grad * x_hat);
-        atomicAdd(&s_grad_beta[c], prelu_grad);
+        local_grad_gamma += prelu_grad * x_hat;
+        local_grad_beta += prelu_grad;
     }
+    
+    s_grad_gamma[tid] = local_grad_gamma;
+    s_grad_beta[tid] = local_grad_beta;
     __syncthreads();
     
-    for (int i = tid; i < C; i += blockDim.x) {
-        if (s_grad_gamma[i] != 0.0f) {
-            atomicAdd(&grad_gamma[i], s_grad_gamma[i]);
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            s_grad_gamma[tid] += s_grad_gamma[tid + s];
+            s_grad_beta[tid] += s_grad_beta[tid + s];
         }
-        if (s_grad_beta[i] != 0.0f) {
-            atomicAdd(&grad_beta[i], s_grad_beta[i]);
+        __syncthreads();
+    }
+    
+    if (tid == 0) {
+        grad_gamma[c] = s_grad_gamma[0];
+        grad_beta[c] = s_grad_beta[0];
+    }
+}
+
+__global__ void maxpool_prelu_batchnorm_compute_sums_fused_kernel(
+    const float* __restrict__ pool_input,
+    const float* __restrict__ bn_input,
+    const float* __restrict__ prelu_input,
+    const float* __restrict__ grad_output,
+    const float* __restrict__ prelu_alpha,
+    const float* __restrict__ bn_mean,
+    const float* __restrict__ bn_var,
+    float* __restrict__ sum_dy,
+    float* __restrict__ sum_dy_xhat,
+    float* __restrict__ grad_alpha,
+    int N, int C, int pool_in_H, int pool_in_W,
+    int pool_out_H, int pool_out_W, int pool_k, int pool_stride,
+    float eps
+) {
+    int c = blockIdx.x;
+    if (c >= C) return;
+    
+    extern __shared__ float sdata[];
+    float* s_dy = sdata;
+    float* s_dy_xhat = sdata + blockDim.x;
+    float* s_grad_alpha = sdata + 2 * blockDim.x;
+    
+    int tid = threadIdx.x;
+    int pool_out_spatial = pool_out_H * pool_out_W;
+    int pool_out_total = N * pool_out_spatial;
+    
+    float m = bn_mean[c];
+    float inv_std = rsqrtf(bn_var[c] + eps);
+    float alpha_c = prelu_alpha[c];
+    
+    float local_dy = 0.0f;
+    float local_dy_xhat = 0.0f;
+    float local_grad_alpha = 0.0f;
+    
+    for (int i = tid; i < pool_out_total; i += blockDim.x) {
+        int n = i / pool_out_spatial;
+        int pool_hw = i % pool_out_spatial;
+        int pool_oh = pool_hw / pool_out_W;
+        int pool_ow = pool_hw % pool_out_W;
+        
+        int max_ih = -1, max_iw = -1;
+        float max_val = -FLT_MAX;
+        for (int kh = 0; kh < pool_k; ++kh) {
+            for (int kw = 0; kw < pool_k; ++kw) {
+                int ih = pool_oh * pool_stride + kh;
+                int iw = pool_ow * pool_stride + kw;
+                if (ih < pool_in_H && iw < pool_in_W) {
+                    size_t in_idx = ((static_cast<size_t>(n) * C + c) * pool_in_H + ih) * pool_in_W + iw;
+                    float val = pool_input[in_idx];
+                    if (val > max_val) {
+                        max_val = val;
+                        max_ih = ih;
+                        max_iw = iw;
+                    }
+                }
+            }
+        }
+        
+        if (max_ih >= 0 && max_iw >= 0) {
+            size_t grad_out_idx = ((static_cast<size_t>(n) * C + c) * pool_out_H + pool_oh) * pool_out_W + pool_ow;
+            size_t max_idx = ((static_cast<size_t>(n) * C + c) * pool_in_H + max_ih) * pool_in_W + max_iw;
+            
+            float go = grad_output[grad_out_idx];
+            float prelu_in = prelu_input[max_idx];
+            float bn_in = bn_input[max_idx];
+            
+            float prelu_grad = (prelu_in > 0.0f) ? go : alpha_c * go;
+            
+            if (prelu_in <= 0.0f) {
+                local_grad_alpha += go * prelu_in;
+            }
+            
+            float x_hat = (bn_in - m) * inv_std;
+            local_dy += prelu_grad;
+            local_dy_xhat += prelu_grad * x_hat;
         }
     }
-    for (int i = tid; i < C; i += blockDim.x) {
-        if (s_grad_gamma[i] != 0.0f) {
-            atomicAdd(&grad_gamma[i], s_grad_gamma[i]);
+    
+    s_dy[tid] = local_dy;
+    s_dy_xhat[tid] = local_dy_xhat;
+    s_grad_alpha[tid] = local_grad_alpha;
+    __syncthreads();
+    
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            s_dy[tid] += s_dy[tid + s];
+            s_dy_xhat[tid] += s_dy_xhat[tid + s];
+            s_grad_alpha[tid] += s_grad_alpha[tid + s];
         }
-        if (s_grad_beta[i] != 0.0f) {
-            atomicAdd(&grad_beta[i], s_grad_beta[i]);
+        __syncthreads();
+    }
+    
+    if (tid == 0) {
+        sum_dy[c] = s_dy[0];
+        sum_dy_xhat[c] = s_dy_xhat[0];
+        atomicAdd(&grad_alpha[c], s_grad_alpha[0]);
+    }
+}
+
+__global__ void maxpool_prelu_batchnorm_backward_fused_kernel(
+    const float* __restrict__ pool_input,
+    const float* __restrict__ bn_input,
+    const float* __restrict__ prelu_input,
+    const float* __restrict__ grad_output,
+    float* __restrict__ grad_input,
+    float* __restrict__ grad_gamma,
+    float* __restrict__ grad_beta,
+    const float* __restrict__ prelu_alpha,
+    const float* __restrict__ bn_gamma,
+    const float* __restrict__ bn_mean,
+    const float* __restrict__ bn_var,
+    const float* __restrict__ sum_dy,
+    const float* __restrict__ sum_dy_xhat,
+    int N, int C, int pool_in_H, int pool_in_W,
+    int pool_out_H, int pool_out_W, int pool_k, int pool_stride,
+    float eps
+) {
+    extern __shared__ float smem[];
+    float* s_grad_gamma = smem;
+    float* s_grad_beta = smem + blockDim.x;
+    
+    int c = blockIdx.x;
+    if (c >= C) return;
+    
+    int tid = threadIdx.x;
+    int pool_out_spatial = pool_out_H * pool_out_W;
+    int pool_out_total = N * pool_out_spatial;
+    int M = pool_out_total;
+    
+    float m = bn_mean[c];
+    float inv_std = rsqrtf(bn_var[c] + eps);
+    float gamma_c = bn_gamma[c];
+    float alpha_c = prelu_alpha[c];
+    float sdy = sum_dy[c];
+    float sdy_xhat = sum_dy_xhat[c];
+    
+    float local_grad_gamma = 0.0f;
+    float local_grad_beta = 0.0f;
+    
+    for (int i = tid; i < pool_out_total; i += blockDim.x) {
+        int n = i / pool_out_spatial;
+        int pool_hw = i % pool_out_spatial;
+        int pool_oh = pool_hw / pool_out_W;
+        int pool_ow = pool_hw % pool_out_W;
+        
+        int max_ih = -1, max_iw = -1;
+        float max_val = -FLT_MAX;
+        for (int kh = 0; kh < pool_k; ++kh) {
+            for (int kw = 0; kw < pool_k; ++kw) {
+                int ih = pool_oh * pool_stride + kh;
+                int iw = pool_ow * pool_stride + kw;
+                if (ih < pool_in_H && iw < pool_in_W) {
+                    size_t in_idx = ((static_cast<size_t>(n) * C + c) * pool_in_H + ih) * pool_in_W + iw;
+                    float val = pool_input[in_idx];
+                    if (val > max_val) {
+                        max_val = val;
+                        max_ih = ih;
+                        max_iw = iw;
+                    }
+                }
+            }
         }
+        
+        if (max_ih >= 0 && max_iw >= 0) {
+            size_t grad_out_idx = ((static_cast<size_t>(n) * C + c) * pool_out_H + pool_oh) * pool_out_W + pool_ow;
+            size_t max_idx = ((static_cast<size_t>(n) * C + c) * pool_in_H + max_ih) * pool_in_W + max_iw;
+            
+            float go = grad_output[grad_out_idx];
+            float prelu_in = prelu_input[max_idx];
+            float bn_in = bn_input[max_idx];
+            
+            float prelu_grad = (prelu_in > 0.0f) ? go : alpha_c * go;
+            float x_hat = (bn_in - m) * inv_std;
+            
+            float grad_bn = gamma_c * inv_std * (prelu_grad - sdy / M - x_hat * sdy_xhat / M);
+            atomicAdd(&grad_input[max_idx], grad_bn);
+            
+            local_grad_gamma += prelu_grad * x_hat;
+            local_grad_beta += prelu_grad;
+        }
+    }
+    
+    s_grad_gamma[tid] = local_grad_gamma;
+    s_grad_beta[tid] = local_grad_beta;
+    __syncthreads();
+    
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            s_grad_gamma[tid] += s_grad_gamma[tid + s];
+            s_grad_beta[tid] += s_grad_beta[tid + s];
+        }
+        __syncthreads();
+    }
+    
+    if (tid == 0) {
+        grad_gamma[c] = s_grad_gamma[0];
+        grad_beta[c] = s_grad_beta[0];
     }
 }
 
@@ -785,7 +1324,6 @@ void gpu_prelu_batchnorm_fused_backward(
     }
     
     int N = bn_input.n, C = bn_input.c, H = bn_input.h, W = bn_input.w;
-    int total = N * C * H * W;
     int num_features = bn.get_num_features();
     float eps = bn.get_eps();
     
@@ -802,13 +1340,64 @@ void gpu_prelu_batchnorm_fused_backward(
         N, C, H, W, eps);
     CUDA_CHECK(cudaGetLastError());
     
-    size_t smem_size = 2 * C * sizeof(float);
-    prelu_batchnorm_backward_fused_kernel<<<(total + 255) / 256, 256, smem_size>>>(
+    prelu_batchnorm_backward_fused_kernel<<<C, 256, 2 * 256 * sizeof(float)>>>(
         bn_input.d_data, prelu_input.d_data, grad_output.d_data, grad_input.d_data,
         bn.get_grad_gamma(), bn.get_grad_beta(),
         prelu.get_alpha(), bn.get_gamma(), bn.get_cache_mean(), bn.get_cache_var(),
         d_persistent_sum_dy, d_persistent_sum_dy_xhat,
         N, C, H, W, eps);
+    CUDA_CHECK(cudaGetLastError());
+    
+    gpu_sgd_update_opt(bn.get_gamma(), bn.get_grad_gamma(), learning_rate, num_features);
+    gpu_sgd_update_opt(bn.get_beta(), bn.get_grad_beta(), learning_rate, num_features);
+    gpu_sgd_update_opt(prelu.get_alpha(), prelu.get_grad_alpha(), learning_rate, num_features);
+}
+
+void gpu_maxpool_prelu_batchnorm_fused_backward(
+    const GPUTensor4D& pool_input,
+    const GPUTensor4D& bn_input,
+    const GPUTensor4D& prelu_input,
+    const GPUTensor4D& grad_output,
+    GPUTensor4D& grad_input,
+    GPUBatchNorm2D& bn,
+    GPUPReLULayer& prelu,
+    int pool_k, int pool_stride,
+    float learning_rate
+) {
+    int pool_in_H = pool_input.h;
+    int pool_in_W = pool_input.w;
+    int pool_out_H = grad_output.h;
+    int pool_out_W = grad_output.w;
+    
+    if (grad_input.n != pool_input.n || grad_input.c != pool_input.c || 
+        grad_input.h != pool_input.h || grad_input.w != pool_input.w) {
+        grad_input.allocate(pool_input.n, pool_input.c, pool_input.h, pool_input.w);
+    }
+    CUDA_CHECK(cudaMemset(grad_input.d_data, 0, grad_input.bytes()));
+    
+    int N = pool_input.n, C = pool_input.c;
+    int num_features = bn.get_num_features();
+    float eps = bn.get_eps();
+    
+    ensure_bn_backward_buffers(static_cast<size_t>(num_features));
+    
+    CUDA_CHECK(cudaMemset(bn.get_grad_gamma(), 0, num_features * sizeof(float)));
+    CUDA_CHECK(cudaMemset(bn.get_grad_beta(), 0, num_features * sizeof(float)));
+    CUDA_CHECK(cudaMemset(prelu.get_grad_alpha(), 0, num_features * sizeof(float)));
+    
+    maxpool_prelu_batchnorm_compute_sums_fused_kernel<<<C, 256, 3 * 256 * sizeof(float)>>>(
+        pool_input.d_data, bn_input.d_data, prelu_input.d_data, grad_output.d_data,
+        prelu.get_alpha(), bn.get_cache_mean(), bn.get_cache_var(),
+        d_persistent_sum_dy, d_persistent_sum_dy_xhat, prelu.get_grad_alpha(),
+        N, C, pool_in_H, pool_in_W, pool_out_H, pool_out_W, pool_k, pool_stride, eps);
+    CUDA_CHECK(cudaGetLastError());
+    
+    maxpool_prelu_batchnorm_backward_fused_kernel<<<C, 256, 2 * 256 * sizeof(float)>>>(
+        pool_input.d_data, bn_input.d_data, prelu_input.d_data, grad_output.d_data,
+        grad_input.d_data, bn.get_grad_gamma(), bn.get_grad_beta(),
+        prelu.get_alpha(), bn.get_gamma(), bn.get_cache_mean(), bn.get_cache_var(),
+        d_persistent_sum_dy, d_persistent_sum_dy_xhat,
+        N, C, pool_in_H, pool_in_W, pool_out_H, pool_out_W, pool_k, pool_stride, eps);
     CUDA_CHECK(cudaGetLastError());
     
     gpu_sgd_update_opt(bn.get_gamma(), bn.get_grad_gamma(), learning_rate, num_features);

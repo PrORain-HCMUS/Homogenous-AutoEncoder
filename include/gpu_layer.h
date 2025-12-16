@@ -172,12 +172,27 @@ void gpu_conv2d_backward_cudnn_full(const GPUTensor4D& input, const GPUTensor4D&
 void gpu_conv2d_backward_cudnn_adamw(const GPUTensor4D& input, const GPUTensor4D& grad_output, GPUTensor4D& grad_input, GPUConv2DLayer& conv, float learning_rate, const OptimizerConfig& opt_config);
 void gpu_batchnorm_prelu_fused_forward(const GPUTensor4D& input, GPUTensor4D& output,
     GPUBatchNorm2D& bn, const GPUPReLULayer& prelu, bool training);
+void gpu_batchnorm_prelu_fused_forward_with_intermediate(
+    const GPUTensor4D& input, GPUTensor4D& bn_output, GPUTensor4D& prelu_output,
+    GPUBatchNorm2D& bn, const GPUPReLULayer& prelu, bool training);
+void gpu_batchnorm_prelu_maxpool_fused_forward(const GPUTensor4D& input, GPUTensor4D& output,
+    GPUBatchNorm2D& bn, const GPUPReLULayer& prelu, int pool_k, int pool_stride, bool training);
 void gpu_prelu_batchnorm_fused_backward(
     const GPUTensor4D& bn_input,
     const GPUTensor4D& prelu_input,
     const GPUTensor4D& grad_output,
     GPUTensor4D& grad_input,
     GPUBatchNorm2D& bn, GPUPReLULayer& prelu, float learning_rate);
+void gpu_maxpool_prelu_batchnorm_fused_backward(
+    const GPUTensor4D& pool_input, const GPUTensor4D& bn_input, const GPUTensor4D& prelu_input,
+    const GPUTensor4D& grad_output, GPUTensor4D& grad_input,
+    GPUBatchNorm2D& bn, GPUPReLULayer& prelu, int pool_k, int pool_stride, float learning_rate);
+
+void gpu_upsample_conv_fused_forward(const GPUTensor4D& input, const float* weights, const float* bias,
+    GPUTensor4D& output, int in_c, int out_c, int k, int stride, int padding, int scale);
+void gpu_upsample_conv_fused_forward_wrapper(const GPUTensor4D& input, const GPUConv2DLayer& conv, 
+    GPUTensor4D& output, int scale);
+
 #endif
 
 #endif

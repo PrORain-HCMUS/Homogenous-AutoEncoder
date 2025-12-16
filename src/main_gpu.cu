@@ -215,7 +215,7 @@ int main(int argc, char** argv) {
     std::cout << "  Batch: " << batch_size << ", Batches/epoch: " << num_batches << "\n";
     logger.log_dataset_info(effective_train, test.num_images, num_batches);
 
-    std::cout << "Initializing autoencoder...\n";
+    std::cout << "Initializing autoencoder...\\n";
     LossType loss_type = use_bce_loss ? LossType::BCE : LossType::MSE;
     GPUAutoencoder autoencoder(loss_type);
     std::cout << "Loss: " << (use_bce_loss ? "BCE+Sigmoid" : "MSE") << "\n";

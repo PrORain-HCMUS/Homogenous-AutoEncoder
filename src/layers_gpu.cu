@@ -44,7 +44,11 @@ void GPUTensor4D::allocate(int n_, int c_, int h_, int w_) {
 }
 
 void GPUTensor4D::free() {
-    if (d_data) { CUDA_CHECK(cudaFree(d_data)); d_data = nullptr; }
+    if (d_data) { 
+        cudaError_t err = cudaFree(d_data);
+        (void)err;
+        d_data = nullptr; 
+    }
     n = c = h = w = 0;
 }
 

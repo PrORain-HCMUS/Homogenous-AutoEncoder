@@ -158,7 +158,6 @@ float GPUAutoencoder::train_step(const GPUTensor4D& input, const GPUTensor4D& ta
     
     up1_.backward(x11_, g12_, g11_);
     gpu_prelu_batchnorm_fused_backward(x9_, x10_, g11_, g9_, bn3_, prelu3_, learning_rate);
-    gpu_prelu_batchnorm_fused_backward(x9_, x10_, g11_, g9_, bn3_, prelu3_, learning_rate);
     gpu_conv2d_backward_cudnn_full(x8_, g9_, g8_, conv3_, learning_rate);
     
     pool2_.backward(x7_, g8_, g7_);
@@ -195,51 +194,168 @@ float GPUAutoencoder::train_step(const GPUTensor4D& input, const GPUTensor4D& ta
     return loss;
 }
 
-float GPUAutoencoder::train_step_momentum(const GPUTensor4D& input, const GPUTensor4D& target, 
+#ifdef USE_CUDA_GRAPHS
+void GPUAutoencoder::cleanup_graph() {
+    if (train_graph_exec_) { cudaGraphExecDestroy(train_graph_exec_); train_graph_exec_ = nullptr; }
+    if (train_graph_) { cudaGraphDestroy(train_graph_); train_graph_ = nullptr; }
+    if (graph_stream_) { cudaStreamDestroy(graph_stream_); graph_stream_ = nullptr; }
+    graph_captured_ = false;
+}
+
+void GPUAutoencoder::preallocate_tensors(int n, int c, int h, int w) {
+    x1_.allocate(n, 256, h, w);
+    x2_.allocate(n, 256, h, w);
+    x3_.allocate(n, 256, h, w);
+    x4_.allocate(n, 256, h/2, w/2);
+    x5_.allocate(n, 128, h/2, w/2);
+    x6_.allocate(n, 128, h/2, w/2);
+    x7_.allocate(n, 128, h/2, w/2);
+    x8_.allocate(n, 128, h/4, w/4);
+    x9_.allocate(n, 128, h/4, w/4);
+    x10_.allocate(n, 128, h/4, w/4);
+    x11_.allocate(n, 128, h/4, w/4);
+    x12_.allocate(n, 128, h/2, w/2);
+    x13_.allocate(n, 256, h/2, w/2);
+    x14_.allocate(n, 256, h/2, w/2);
+    x15_.allocate(n, 256, h/2, w/2);
+    x16_.allocate(n, 256, h, w);
+    x17_.allocate(n, 3, h, w);
+    x18_.allocate(n, 3, h, w);
+    
+    g0_.allocate(n, c, h, w);
+    g1_.allocate(n, 256, h, w);
+    g2_.allocate(n, 256, h, w);
+    g3_.allocate(n, 256, h, w);
+    g4_.allocate(n, 256, h/2, w/2);
+    g5_.allocate(n, 128, h/2, w/2);
+    g6_.allocate(n, 128, h/2, w/2);
+    g7_.allocate(n, 128, h/2, w/2);
+    g8_.allocate(n, 128, h/4, w/4);
+    g9_.allocate(n, 128, h/4, w/4);
+    g10_.allocate(n, 128, h/4, w/4);
+    g11_.allocate(n, 128, h/4, w/4);
+    g12_.allocate(n, 128, h/2, w/2);
+    g13_.allocate(n, 256, h/2, w/2);
+    g14_.allocate(n, 256, h/2, w/2);
+    g15_.allocate(n, 256, h/2, w/2);
+    g16_.allocate(n, 256, h, w);
+    g17_.allocate(n, 3, h, w);
+    g18_.allocate(n, 3, h, w);
+}
+
+void GPUAutoencoder::capture_train_graph(const GPUTensor4D& input, const GPUTensor4D& target, 
                                           float learning_rate, const OptimizerConfig& opt_config) {
-#ifdef USE_OPTIMIZED_KERNELS
+    cleanup_graph();
+    
+    preallocate_tensors(input.n, input.c, input.h, input.w);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    
+    CUDA_CHECK(cudaStreamCreate(&graph_stream_));
+    CUDA_CHECK(cudaStreamBeginCapture(graph_stream_, cudaStreamCaptureModeGlobal));
+    
     gpu_conv2d_forward_cudnn_wrapper(input, conv1_, x1_);
-#else
-    conv1_.forward(input, x1_);
-#endif
     bn1_.forward(x1_, x2_, true);
     prelu1_.forward(x2_, x3_);
     pool1_.forward(x3_, x4_);
     
-#ifdef USE_OPTIMIZED_KERNELS
     gpu_conv2d_forward_cudnn_wrapper(x4_, conv2_, x5_);
-#else
-    conv2_.forward(x4_, x5_);
-#endif
     bn2_.forward(x5_, x6_, true);
     prelu2_.forward(x6_, x7_);
     pool2_.forward(x7_, x8_);
     
-#ifdef USE_OPTIMIZED_KERNELS
     gpu_conv2d_forward_cudnn_wrapper(x8_, conv3_, x9_);
-#else
-    conv3_.forward(x8_, x9_);
-#endif
     bn3_.forward(x9_, x10_, true);
     prelu3_.forward(x10_, x11_);
     up1_.forward(x11_, x12_);
     
-#ifdef USE_OPTIMIZED_KERNELS
     gpu_conv2d_forward_cudnn_wrapper(x12_, conv4_, x13_);
-#else
-    conv4_.forward(x12_, x13_);
-#endif
     bn4_.forward(x13_, x14_, true);
     prelu4_.forward(x14_, x15_);
     up2_.forward(x15_, x16_);
     
+    gpu_conv2d_forward_cudnn_wrapper(x16_, conv5_, x17_);
+    
+    if (loss_type_ == LossType::BCE) {
+        sigmoid_.forward(x17_, x18_);
+        gpu_bce_loss_with_grad(x18_, target, g18_);
+        sigmoid_.backward(x18_, g18_, g17_);
+    } else {
+        gpu_mse_loss_with_grad(x17_, target, g17_);
+    }
+    
+    gpu_conv2d_backward_cudnn_adamw(x16_, g17_, g16_, conv5_, learning_rate, opt_config);
+    up2_.backward(x15_, g16_, g15_);
+    gpu_prelu_batchnorm_fused_backward(x13_, x14_, g15_, g13_, bn4_, prelu4_, learning_rate);
+    gpu_conv2d_backward_cudnn_adamw(x12_, g13_, g12_, conv4_, learning_rate, opt_config);
+    up1_.backward(x11_, g12_, g11_);
+    gpu_prelu_batchnorm_fused_backward(x9_, x10_, g11_, g9_, bn3_, prelu3_, learning_rate);
+    gpu_conv2d_backward_cudnn_adamw(x8_, g9_, g8_, conv3_, learning_rate, opt_config);
+    pool2_.backward(x7_, g8_, g7_);
+    gpu_prelu_batchnorm_fused_backward(x5_, x6_, g7_, g5_, bn2_, prelu2_, learning_rate);
+    gpu_conv2d_backward_cudnn_adamw(x4_, g5_, g4_, conv2_, learning_rate, opt_config);
+    pool1_.backward(x3_, g4_, g3_);
+    gpu_prelu_batchnorm_fused_backward(x1_, x2_, g3_, g1_, bn1_, prelu1_, learning_rate);
+    gpu_conv2d_backward_cudnn_adamw(input, g1_, g0_, conv1_, learning_rate, opt_config);
+    
+    CUDA_CHECK(cudaStreamEndCapture(graph_stream_, &train_graph_));
+    CUDA_CHECK(cudaGraphInstantiate(&train_graph_exec_, train_graph_, nullptr, nullptr, 0));
+    captured_batch_size_ = input.n;
+    graph_captured_ = true;
+}
+#endif
+
+float GPUAutoencoder::train_step_momentum(const GPUTensor4D& input, const GPUTensor4D& target, 
+                                          float learning_rate, const OptimizerConfig& opt_config) {
+#if defined(USE_CUDA_GRAPHS) && defined(USE_OPTIMIZED_KERNELS)
+    if (!graph_captured_ || captured_batch_size_ != input.n) {
+        capture_train_graph(input, target, learning_rate, opt_config);
+    }
+    CUDA_CHECK(cudaGraphLaunch(train_graph_exec_, graph_stream_));
+    CUDA_CHECK(cudaStreamSynchronize(graph_stream_));
+    return loss_type_ == LossType::BCE ? gpu_bce_loss(x18_, target) : gpu_mse_loss(x17_, target);
+#else
 #ifdef USE_OPTIMIZED_KERNELS
+    gpu_conv2d_forward_cudnn_wrapper(input, conv1_, x1_);
+    gpu_batchnorm_prelu_fused_forward_with_intermediate(x1_, x2_, x3_, bn1_, prelu1_, true);
+    pool1_.forward(x3_, x4_);
+    
+    gpu_conv2d_forward_cudnn_wrapper(x4_, conv2_, x5_);
+    gpu_batchnorm_prelu_fused_forward_with_intermediate(x5_, x6_, x7_, bn2_, prelu2_, true);
+    pool2_.forward(x7_, x8_);
+    
+    gpu_conv2d_forward_cudnn_wrapper(x8_, conv3_, x9_);
+    gpu_batchnorm_prelu_fused_forward_with_intermediate(x9_, x10_, x11_, bn3_, prelu3_, true);
+    up1_.forward(x11_, x12_);
+    
+    gpu_conv2d_forward_cudnn_wrapper(x12_, conv4_, x13_);
+    gpu_batchnorm_prelu_fused_forward_with_intermediate(x13_, x14_, x15_, bn4_, prelu4_, true);
+    up2_.forward(x15_, x16_);
+    
     gpu_conv2d_forward_cudnn_wrapper(x16_, conv5_, x17_);
 #else
+    conv1_.forward(input, x1_);
+    bn1_.forward(x1_, x2_, true);
+    prelu1_.forward(x2_, x3_);
+    pool1_.forward(x3_, x4_);
+    
+    conv2_.forward(x4_, x5_);
+    bn2_.forward(x5_, x6_, true);
+    prelu2_.forward(x6_, x7_);
+    pool2_.forward(x7_, x8_);
+    
+    conv3_.forward(x8_, x9_);
+    bn3_.forward(x9_, x10_, true);
+    prelu3_.forward(x10_, x11_);
+    up1_.forward(x11_, x12_);
+    
+    conv4_.forward(x12_, x13_);
+    bn4_.forward(x13_, x14_, true);
+    prelu4_.forward(x14_, x15_);
+    up2_.forward(x15_, x16_);
+    
     conv5_.forward(x16_, x17_);
 #endif
     
-    // Loss + gradient
     float loss;
     if (loss_type_ == LossType::BCE) {
         sigmoid_.forward(x17_, x18_);
@@ -291,6 +407,7 @@ float GPUAutoencoder::train_step_momentum(const GPUTensor4D& input, const GPUTen
 #endif
     
     return loss;
+#endif
 }
 
 bool GPUAutoencoder::save_weights(const std::string& path) const {

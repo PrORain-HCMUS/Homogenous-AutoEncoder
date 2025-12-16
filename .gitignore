@@ -8,3 +8,6 @@ run_cpu_train_workers.py
 docs/
 *.weights
 interview_questions.md
+
+*.zip
+notebooks/convert.py
