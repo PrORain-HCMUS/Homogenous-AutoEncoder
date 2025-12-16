@@ -158,7 +158,6 @@ float GPUAutoencoder::train_step(const GPUTensor4D& input, const GPUTensor4D& ta
     
     up1_.backward(x11_, g12_, g11_);
     gpu_prelu_batchnorm_fused_backward(x9_, x10_, g11_, g9_, bn3_, prelu3_, learning_rate);
-    gpu_prelu_batchnorm_fused_backward(x9_, x10_, g11_, g9_, bn3_, prelu3_, learning_rate);
     gpu_conv2d_backward_cudnn_full(x8_, g9_, g8_, conv3_, learning_rate);
     
     pool2_.backward(x7_, g8_, g7_);
@@ -376,10 +375,12 @@ float GPUAutoencoder::train_step_momentum(const GPUTensor4D& input, const GPUTen
     gpu_prelu_batchnorm_fused_backward(x9_, x10_, g11_, g9_, bn3_, prelu3_, learning_rate);
     gpu_conv2d_backward_cudnn_adamw(x8_, g9_, g8_, conv3_, learning_rate, opt_config);
     
-    gpu_maxpool_prelu_batchnorm_fused_backward(x7_, x5_, x6_, g8_, g5_, bn2_, prelu2_, 2, 2, learning_rate);
+    pool2_.backward(x7_, g8_, g7_);
+    gpu_prelu_batchnorm_fused_backward(x5_, x6_, g7_, g5_, bn2_, prelu2_, learning_rate);
     gpu_conv2d_backward_cudnn_adamw(x4_, g5_, g4_, conv2_, learning_rate, opt_config);
     
-    gpu_maxpool_prelu_batchnorm_fused_backward(x3_, x1_, x2_, g4_, g1_, bn1_, prelu1_, 2, 2, learning_rate);
+    pool1_.backward(x3_, g4_, g3_);
+    gpu_prelu_batchnorm_fused_backward(x1_, x2_, g3_, g1_, bn1_, prelu1_, learning_rate);
     gpu_conv2d_backward_cudnn_adamw(input, g1_, g0_, conv1_, learning_rate, opt_config);
 #else
     conv5_.backward_momentum(x16_, g17_, g16_, learning_rate, opt_config);

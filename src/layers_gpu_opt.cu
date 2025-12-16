@@ -1055,7 +1055,7 @@ __global__ void prelu_batchnorm_backward_fused_kernel(
     for (int i = tid; i < total_per_channel; i += blockDim.x) {
         int n = i / spatial;
         int hw = i % spatial;
-        size_t idx = (static_cast<size_t>(n) * C + c) * spatial + hw;
+        size_t idx = ((static_cast<size_t>(n) * C + c) * H + hw / W) * W + hw % W;
         
         float go = grad_output[idx];
         float prelu_in = prelu_input[idx];
@@ -1216,8 +1216,7 @@ __global__ void maxpool_prelu_batchnorm_backward_fused_kernel(
     int tid = threadIdx.x;
     int pool_out_spatial = pool_out_H * pool_out_W;
     int pool_out_total = N * pool_out_spatial;
-    int pool_in_spatial = pool_in_H * pool_in_W;
-    int M = N * pool_in_spatial;
+    int M = pool_out_total;
     
     float m = bn_mean[c];
     float inv_std = rsqrtf(bn_var[c] + eps);
