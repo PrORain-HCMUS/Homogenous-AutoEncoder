@@ -15,7 +15,7 @@ __global__ void random_crop_flip_jitter_cutout_kernel(
     curandState* __restrict__ states,
     int N, int C, int H, int W,
     int padding, float flip_prob,
-    bool color_jitter, float brightness_range,
+    bool color_jitter, float brightness_range, float contrast_range, float saturation_range,
     bool cutout, int cutout_size
 ) {
     int n = blockIdx.z;
@@ -28,8 +28,12 @@ __global__ void random_crop_flip_jitter_cutout_kernel(
     int crop_x = static_cast<int>(curand_uniform(&local_state) * (2 * padding + 1));
     
     float brightness_delta = 0.0f;
+    float contrast_factor = 1.0f;
+    float saturation_factor = 1.0f;
     if (color_jitter) {
         brightness_delta = (curand_uniform(&local_state) * 2.0f - 1.0f) * brightness_range;
+        contrast_factor = 1.0f + (curand_uniform(&local_state) * 2.0f - 1.0f) * contrast_range;
+        saturation_factor = 1.0f + (curand_uniform(&local_state) * 2.0f - 1.0f) * saturation_range;
     }
     
     int cutout_center_h = 0, cutout_center_w = 0;
@@ -57,17 +61,28 @@ __global__ void random_crop_flip_jitter_cutout_kernel(
         (oy >= cutout_center_h - half_cutout) && (oy < cutout_center_h + half_cutout) &&
         (ox >= cutout_center_w - half_cutout) && (ox < cutout_center_w + half_cutout);
     
-    for (int c = 0; c < C; ++c) {
-        float val = 0.0f;
-        if (!in_cutout) {
+    float rgb[3] = {0.0f, 0.0f, 0.0f};
+    if (!in_cutout) {
+        for (int c = 0; c < C; ++c) {
             if (iy >= padding && iy < H + padding && ix >= padding && ix < W + padding) {
                 int real_iy = iy - padding;
                 int real_ix = ix - padding;
-                val = input[((static_cast<size_t>(n) * C + c) * H + real_iy) * W + real_ix];
+                rgb[c] = input[((static_cast<size_t>(n) * C + c) * H + real_iy) * W + real_ix];
             }
-            val = fminf(1.0f, fmaxf(0.0f, val + brightness_delta));
         }
-        output[((static_cast<size_t>(n) * C + c) * H + oy) * W + ox] = val;
+        
+        float gray = 0.299f * rgb[0] + 0.587f * rgb[1] + 0.114f * rgb[2];
+        for (int c = 0; c < C; ++c) {
+            float val = rgb[c];
+            val = (val - 0.5f) * contrast_factor + 0.5f;
+            val = gray + saturation_factor * (val - gray);
+            val = val + brightness_delta;
+            rgb[c] = fminf(1.0f, fmaxf(0.0f, val));
+        }
+    }
+    
+    for (int c = 0; c < C; ++c) {
+        output[((static_cast<size_t>(n) * C + c) * H + oy) * W + ox] = rgb[c];
     }
 }
 
@@ -94,6 +109,7 @@ public:
     void augment(const float* d_input, float* d_output, int N, int C, int H, int W,
                  int padding = 4, float flip_prob = 0.5f,
                  bool color_jitter = true, float brightness_range = 0.2f,
+                 float contrast_range = 0.2f, float saturation_range = 0.3f,
                  bool cutout = true, int cutout_size = 8) {
         if (N > max_batch_size_) init(N);
         
@@ -102,7 +118,7 @@ public:
         random_crop_flip_jitter_cutout_kernel<<<grid, block>>>(
             d_input, d_output, d_states_, N, C, H, W,
             padding, flip_prob,
-            color_jitter, brightness_range,
+            color_jitter, brightness_range, contrast_range, saturation_range,
             cutout, cutout_size);
     }
 };
