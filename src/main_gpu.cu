@@ -13,6 +13,7 @@
 #include "gpu_autoencoder.h"
 #include "gpu_layer.h"
 #include "cuda_utils.h"
+#include "gpu_augmentation.cuh"
 #ifdef WITH_SVM
 #include "svm_wrapper.h"
 #endif
@@ -20,10 +21,8 @@
 float get_scheduled_lr(float base_lr, int epoch, int total_epochs) {
     const int warmup_epochs = 5;
     if (epoch < warmup_epochs) {
-        // Linear warmup
         return base_lr * static_cast<float>(epoch + 1) / static_cast<float>(warmup_epochs);
     }
-    // Cosine annealing after warmup
     const float min_lr = base_lr * 0.001f;
     int adjusted_epoch = epoch - warmup_epochs;
     int adjusted_total = total_epochs - warmup_epochs;
@@ -122,30 +121,101 @@ void extract_features_batch(GPUAutoencoder& autoencoder, const float* images, fl
     for (int start = 0; start < num_images; start += batch_size) {
         int current_batch = std::min(batch_size, num_images - start);
         
-        // Copy batch to pinned memory
         for (int b = 0; b < current_batch; ++b) {
             const float* src = images + static_cast<size_t>(start + b) * image_size;
             std::copy(src, src + image_size, h_batch + static_cast<size_t>(b) * image_size);
         }
         
-        // Reallocate if batch size changed (last batch)
         if (current_batch != gpu_batch.n) {
             gpu_batch.allocate(current_batch, 3, 32, 32);
         }
         
-        // Copy to GPU
         CUDA_CHECK(cudaMemcpy(gpu_batch.d_data, h_batch, current_batch * image_size * sizeof(float), cudaMemcpyHostToDevice));
-        
-        // Encode batch
         autoencoder.encode(gpu_batch, latent);
-        
-        // Copy features back
         CUDA_CHECK(cudaMemcpy(features + static_cast<size_t>(start) * feature_dim, 
                              latent.d_data, current_batch * feature_dim * sizeof(float), cudaMemcpyDeviceToHost));
         
-        // Progress
         if ((start + current_batch) % 5000 == 0 || start + current_batch == num_images) {
             std::cout << "\r  Extracted: " << (start + current_batch) << "/" << num_images << " images" << std::flush;
+        }
+    }
+    std::cout << std::endl;
+}
+
+__global__ void crop_image_kernel(const float* __restrict__ input, float* __restrict__ output, 
+                                  int N, int C, int H, int W, int crop_y, int crop_x) {
+    int n = blockIdx.z;
+    int oy = blockIdx.y * blockDim.y + threadIdx.y;
+    int ox = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= N || oy >= H || ox >= W) return;
+    
+    int iy = oy + crop_y;
+    int ix = ox + crop_x;
+    
+    for (int c = 0; c < C; ++c) {
+        float val = 0.0f;
+        if (iy >= 0 && iy < H && ix >= 0 && ix < W) {
+            val = input[((static_cast<size_t>(n) * C + c) * H + iy) * W + ix];
+        }
+        output[((static_cast<size_t>(n) * C + c) * H + oy) * W + ox] = val;
+    }
+}
+
+__global__ void accumulate_features_kernel(float* __restrict__ accumulated, const float* __restrict__ current, 
+                                          size_t n, float scale) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        accumulated[idx] += current[idx] * scale;
+    }
+}
+
+void extract_features_tta(GPUAutoencoder& autoencoder, const float* images, float* features,
+                         int num_images, int batch_size, int feature_dim, float* h_batch, 
+                         GPUTensor4D& gpu_batch, GPUTensor4D& latent, GPUTensor4D& aug_batch) {
+    const size_t image_size = 3 * 32 * 32;
+    const int num_augs = 5;
+    const int crop_offsets[5][2] = {{0,0}, {0,4}, {4,0}, {4,4}, {2,2}};
+    
+    GPUTensor4D accumulated_features;
+    
+    for (int start = 0; start < num_images; start += batch_size) {
+        int current_batch = std::min(batch_size, num_images - start);
+        
+        for (int b = 0; b < current_batch; ++b) {
+            const float* src = images + static_cast<size_t>(start + b) * image_size;
+            std::copy(src, src + image_size, h_batch + static_cast<size_t>(b) * image_size);
+        }
+        
+        if (current_batch != gpu_batch.n) {
+            gpu_batch.allocate(current_batch, 3, 32, 32);
+            aug_batch.allocate(current_batch, 3, 32, 32);
+            accumulated_features.allocate(current_batch, 128, 8, 8);
+        }
+        
+        CUDA_CHECK(cudaMemcpy(gpu_batch.d_data, h_batch, current_batch * image_size * sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemset(accumulated_features.d_data, 0, accumulated_features.bytes()));
+        
+        const float scale = 1.0f / num_augs;
+        for (int aug = 0; aug < num_augs; ++aug) {
+            dim3 block(16, 16);
+            dim3 grid((32 + 15) / 16, (32 + 15) / 16, current_batch);
+            crop_image_kernel<<<grid, block>>>(gpu_batch.d_data, aug_batch.d_data, 
+                                              current_batch, 3, 32, 32, 
+                                              crop_offsets[aug][0], crop_offsets[aug][1]);
+            
+            autoencoder.encode(aug_batch, latent);
+            
+            size_t feat_size = current_batch * feature_dim;
+            int blocks = (feat_size + 255) / 256;
+            accumulate_features_kernel<<<blocks, 256>>>(accumulated_features.d_data, latent.d_data, feat_size, scale);
+        }
+        
+        CUDA_CHECK(cudaMemcpy(features + static_cast<size_t>(start) * feature_dim, 
+                             accumulated_features.d_data, current_batch * feature_dim * sizeof(float), 
+                             cudaMemcpyDeviceToHost));
+        
+        if ((start + current_batch) % 1000 == 0 || start + current_batch == num_images) {
+            std::cout << "\r  Extracted (TTA): " << (start + current_batch) << "/" << num_images << " images" << std::flush;
         }
     }
     std::cout << std::endl;
@@ -197,7 +267,16 @@ int main(int argc, char** argv) {
     cudaDeviceProp prop; CUDA_CHECK(cudaGetDeviceProperties(&prop, device_id));
     GPUTrainingLogger logger(txt_path, csv_path);
     OptimizerConfig opt_config; opt_config.weight_decay = 1e-4f; opt_config.beta1 = 0.9f; opt_config.beta2 = 0.999f; opt_config.use_adamw = true;
-    AugmentConfig aug_config; aug_config.horizontal_flip = true; aug_config.random_crop = true; aug_config.crop_padding = 4;
+    AugmentConfig aug_config; 
+    aug_config.horizontal_flip = true; 
+    aug_config.random_crop = true; 
+    aug_config.crop_padding = 4;
+    aug_config.color_jitter = true;
+    aug_config.brightness_range = 0.2f;
+    aug_config.contrast_range = 0.2f;
+    aug_config.saturation_range = 0.3f;
+    aug_config.cutout = true;
+    aug_config.cutout_size = 8;
     logger.log_config(epochs, batch_size, learning_rate, data_dir, max_train_images, weights_load_path, weights_save_path);
     logger.log_gpu_info(prop.name, prop.major, prop.minor, prop.totalGlobalMem >> 20, prop.multiProcessorCount, prop.maxThreadsPerBlock);
     logger.log_optimizations();
@@ -320,15 +399,15 @@ int main(int argc, char** argv) {
     std::cout << "  Done in " << std::fixed << std::setprecision(2) << train_feat_time << "s";
     std::cout << " (" << static_cast<int>(effective_train / train_feat_time) << " images/sec)\n";
     
-    // Extract test features using batch processing
-    std::cout << "Extracting test features (" << test.num_images << " images)...\n";
+    std::cout << "Extracting test features with TTA (" << test.num_images << " images, 5 augmentations)...\n";
     std::vector<float> test_features(static_cast<size_t>(test.num_images) * feature_dim);
     std::vector<int> test_labels(test.num_images);
     for (int i = 0; i < test.num_images; ++i) test_labels[i] = test.labels[i];
     
+    GPUTensor4D tta_aug_batch;
     auto test_start = std::chrono::high_resolution_clock::now();
-    extract_features_batch(autoencoder, test.images.data(), test_features.data(),
-                          test.num_images, svm_batch_size, feature_dim, h_svm_batch, svm_gpu_batch, svm_latent);
+    extract_features_tta(autoencoder, test.images.data(), test_features.data(),
+                        test.num_images, svm_batch_size, feature_dim, h_svm_batch, svm_gpu_batch, svm_latent, tta_aug_batch);
     
     double test_feat_time = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - test_start).count();
     std::cout << "  Done in " << std::fixed << std::setprecision(2) << test_feat_time << "s";

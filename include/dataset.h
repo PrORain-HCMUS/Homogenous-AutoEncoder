@@ -10,9 +10,11 @@ struct AugmentConfig {
     bool horizontal_flip = true;      // Random horizontal flip (50% chance)
     bool random_crop = true;          // Random crop with padding
     int crop_padding = 4;             // Padding for random crop (32 -> 40 -> crop back to 32)
-    bool color_jitter = true;         // Random brightness/contrast
+    bool color_jitter = true;         // Random brightness/contrast/saturation
     float brightness_range = 0.2f;    // +/- 20% brightness variation
-    bool cutout = true;               // Random erasing (Cutout)
+    float contrast_range = 0.0f;      // +/- 20% contrast (default OFF)
+    float saturation_range = 0.0f;    // +/- 30% saturation (default OFF)
+    bool cutout = false;              // Random erasing (Cutout) - default OFF
     int cutout_size = 8;              // Size of cutout region (8x8 pixels)
     
     AugmentConfig() = default;
