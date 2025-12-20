@@ -166,13 +166,47 @@ void CIFAR10Dataset::augment_image(float* image, const AugmentConfig& config, st
         random_crop_image(image, config.crop_padding, rng);
     }
     
-    // Apply color jitter (random brightness)
-    if (config.color_jitter && config.brightness_range > 0.0f) {
-        std::uniform_real_distribution<float> dist(-config.brightness_range, config.brightness_range);
-        float brightness_delta = dist(rng);
+    // Apply color jitter (brightness, contrast, saturation)
+    if (config.color_jitter) {
+        float brightness_delta = 0.0f;
+        float contrast_factor = 1.0f;
+        float saturation_factor = 1.0f;
         
-        for (int i = 0; i < IMAGE_SIZE; ++i) {
-            image[i] = std::min(1.0f, std::max(0.0f, image[i] + brightness_delta));
+        if (config.brightness_range > 0.0f) {
+            std::uniform_real_distribution<float> dist(-config.brightness_range, config.brightness_range);
+            brightness_delta = dist(rng);
+        }
+        if (config.contrast_range > 0.0f) {
+            std::uniform_real_distribution<float> dist(-config.contrast_range, config.contrast_range);
+            contrast_factor = 1.0f + dist(rng);
+        }
+        if (config.saturation_range > 0.0f) {
+            std::uniform_real_distribution<float> dist(-config.saturation_range, config.saturation_range);
+            saturation_factor = 1.0f + dist(rng);
+        }
+        
+        for (int i = 0; i < IMAGE_HEIGHT * IMAGE_WIDTH; ++i) {
+            float r = image[i];
+            float g = image[IMAGE_HEIGHT * IMAGE_WIDTH + i];
+            float b = image[2 * IMAGE_HEIGHT * IMAGE_WIDTH + i];
+            
+            float gray = 0.299f * r + 0.587f * g + 0.114f * b;
+            
+            r = (r - 0.5f) * contrast_factor + 0.5f;
+            g = (g - 0.5f) * contrast_factor + 0.5f;
+            b = (b - 0.5f) * contrast_factor + 0.5f;
+            
+            r = gray + saturation_factor * (r - gray);
+            g = gray + saturation_factor * (g - gray);
+            b = gray + saturation_factor * (b - gray);
+            
+            r = r + brightness_delta;
+            g = g + brightness_delta;
+            b = b + brightness_delta;
+            
+            image[i] = std::min(1.0f, std::max(0.0f, r));
+            image[IMAGE_HEIGHT * IMAGE_WIDTH + i] = std::min(1.0f, std::max(0.0f, g));
+            image[2 * IMAGE_HEIGHT * IMAGE_WIDTH + i] = std::min(1.0f, std::max(0.0f, b));
         }
     }
     
