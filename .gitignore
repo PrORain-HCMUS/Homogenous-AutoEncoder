@@ -9,5 +9,6 @@ docs/
 *.weights
 interview_questions.md
 
+scripts/
 *.zip
 notebooks/convert.py
