@@ -13,7 +13,7 @@
 #include "gpu_autoencoder.h"
 #include "gpu_layer.h"
 #include "cuda_utils.h"
-#include "gpu_augmentation.cuh"
+
 #ifdef WITH_SVM
 #include "svm_wrapper.h"
 #endif
@@ -109,6 +109,22 @@ __global__ void l2_normalize_kernel(float* features, int num_samples, int dim) {
 void gpu_l2_normalize(float* d_features, int num_samples, int dim) {
     int block_size = 256;
     l2_normalize_kernel<<<num_samples, block_size, block_size * sizeof(float)>>>(d_features, num_samples, dim);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+__global__ void power_normalization_kernel(float* features, size_t n) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        float val = features[idx];
+        if (val >= 0) features[idx] = sqrtf(val);
+        else features[idx] = -sqrtf(-val);
+    }
+}
+
+void gpu_power_normalize(float* d_features, int num_samples, int dim) {
+    size_t total = static_cast<size_t>(num_samples) * dim;
+    power_normalization_kernel<<<(total + 255) / 256, 256>>>(d_features, total);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 }
@@ -277,6 +293,8 @@ int main(int argc, char** argv) {
     aug_config.saturation_range = 0.3f;
     aug_config.cutout = true;
     aug_config.cutout_size = 8;
+    aug_config.gaussian_noise = false;
+    aug_config.random_grayscale = false;
     logger.log_config(epochs, batch_size, learning_rate, data_dir, max_train_images, weights_load_path, weights_save_path);
     logger.log_gpu_info(prop.name, prop.major, prop.minor, prop.totalGlobalMem >> 20, prop.multiProcessorCount, prop.maxThreadsPerBlock);
     logger.log_optimizations();
@@ -294,7 +312,7 @@ int main(int argc, char** argv) {
     std::cout << "  Batch: " << batch_size << ", Batches/epoch: " << num_batches << "\n";
     logger.log_dataset_info(effective_train, test.num_images, num_batches);
 
-    std::cout << "Initializing autoencoder...\\n";
+    std::cout << "Initializing autoencoder...\n";
     LossType loss_type = use_bce_loss ? LossType::BCE : LossType::MSE;
     GPUAutoencoder autoencoder(loss_type);
     std::cout << "Loss: " << (use_bce_loss ? "BCE+Sigmoid" : "MSE") << "\n";
@@ -413,8 +431,6 @@ int main(int argc, char** argv) {
     std::cout << "  Done in " << std::fixed << std::setprecision(2) << test_feat_time << "s";
     std::cout << " (" << static_cast<int>(test.num_images / test_feat_time) << " images/sec)\n";
     
-    // GPU L2 Normalization (much faster than CPU)
-    std::cout << "L2 normalizing features on GPU...\n";
     float* d_train_features = nullptr;
     float* d_test_features = nullptr;
     size_t train_feat_bytes = static_cast<size_t>(effective_train) * feature_dim * sizeof(float);
@@ -426,18 +442,19 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaMemcpy(d_test_features, test_features.data(), test_feat_bytes, cudaMemcpyHostToDevice));
     
     auto norm_start = std::chrono::high_resolution_clock::now();
+    std::cout << "Applying Power + L2 normalization on GPU...\n";
+    gpu_power_normalize(d_train_features, effective_train, feature_dim);
+    gpu_power_normalize(d_test_features, test.num_images, feature_dim);
     gpu_l2_normalize(d_train_features, effective_train, feature_dim);
     gpu_l2_normalize(d_test_features, test.num_images, feature_dim);
     double norm_time = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - norm_start).count();
     std::cout << "  Done in " << std::fixed << std::setprecision(4) << norm_time << "s\n";
     
-    // Copy normalized features back
     CUDA_CHECK(cudaMemcpy(all_train_features.data(), d_train_features, train_feat_bytes, cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(test_features.data(), d_test_features, test_feat_bytes, cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaFree(d_train_features));
     CUDA_CHECK(cudaFree(d_test_features));
     
-    // Sample balanced training set for SVM (1000 per class = 10000 total)
     const int num_classes = 10, samples_per_class = 1000;
     std::vector<int> class_counts(num_classes, 0);
     std::vector<float> svm_train_features;
@@ -464,7 +481,6 @@ int main(int argc, char** argv) {
     std::cout << "Accuracy: " << std::fixed << std::setprecision(2) << (accuracy * 100.0f) << "%\n";
     logger.log_svm_results(accuracy, svm_train_size, test.num_images, feature_dim);
     
-    // Cleanup SVM resources
     CUDA_CHECK(cudaFreeHost(h_svm_batch));
 #endif
 
