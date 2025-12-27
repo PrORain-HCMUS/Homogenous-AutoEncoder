@@ -8,11 +8,16 @@
 <p align="center">
   <img src="https://img.shields.io/badge/CUDA-12.x-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="CUDA">
   <img src="https://img.shields.io/badge/cuDNN-8.x-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="cuDNN">
-  <img src="https://img.shields.io/badge/cuML-RAPIDS-7400B8?style=for-the-badge&logo=rapids&logoColor=white" alt="cuML">
-  <img src="https://img.shields.io/badge/ThunderSVM-GPU-FF6B6B?style=for-the-badge" alt="ThunderSVM">
+  <img src="https://img.shields.io/badge/cuBLAS-GPU-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="cuBLAS">
+  <img src="https://img.shields.io/badge/cuML-RAPIDS-7400B8?style=for-the-badge" alt="cuML">
+</p>
+<p align="center">
   <img src="https://img.shields.io/badge/C++-17-00599C?style=for-the-badge&logo=cplusplus&logoColor=white" alt="C++17">
   <img src="https://img.shields.io/badge/OpenMP-Parallel-0078D4?style=for-the-badge" alt="OpenMP">
+  <img src="https://img.shields.io/badge/ThunderSVM-GPU-FF6B6B?style=for-the-badge" alt="ThunderSVM">
+  <img src="https://img.shields.io/badge/CIFAR--10-Dataset-F7931E?style=for-the-badge" alt="CIFAR-10">
 </p>
+
 
 ---
 
@@ -92,6 +97,9 @@ https://youtu.be/6ZOK-FqO-T4
 ---
 
 ## Detailed Breakdown
+
+> [!NOTE]
+> For deeper technical details about GPU optimization methods and implementation specifics for each phase, see [`docs/technical_explanation.md`](docs/technical_explanation.md).
 
 ### Phase 1: CPU Baseline
 - **Implementation:** Standard C++ with OpenMP for multi-threading.
