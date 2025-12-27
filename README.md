@@ -15,7 +15,7 @@ This project implements a highly optimized **Convolutional Autoencoder** for uns
 |:-------|:-------|:---------|:------:|
 | **GPU Speedup** | >50x | **~505x** | Exceeded |
 | **Accuracy (SVM)** | >50% | **71.2%** | Exceeded |
-| **Training Time** | <15 min | **10.8 min** | Met |
+| **Training Time** | <10 min | **10.8 min** | Met |
 
 ---
 
