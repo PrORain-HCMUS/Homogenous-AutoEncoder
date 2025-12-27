@@ -61,7 +61,6 @@ https://youtu.be/6ZOK-FqO-T4
 | cuDNN   | ~10.8 min     | 0.0114     | ~69.2%       | Production deployment        |
 | **BCE** | ~10.8 min     | 0.55       | **~71.2%**   | Best classification accuracy |
 
-> [!TIP]
 > The **BCE loss version** produces better features for classification, because BCE gradients are more stable for pixel-wise reconstruction.
 
 ---
@@ -74,7 +73,7 @@ https://youtu.be/6ZOK-FqO-T4
   <img src="assets/img/cpu_architecture.jpg" alt="CPU Architecture" width="100%">
 </p>
 
-> [!IMPORTANT] > **CPU Architecture Design:** The CPU baseline uses a simple **Conv + ReLU** architecture without BatchNorm. This intentional simplicity serves Phase 1's goal of creating a baseline for correctness verification and performance measurement. Keeping the architecture simple makes debugging easier and enables direct output comparison between CPU and GPU implementations.
+> **CPU Architecture Design:** The CPU baseline uses a simple **Conv + ReLU** architecture without BatchNorm. This intentional simplicity serves Phase 1's goal of creating a baseline for correctness verification and performance measurement. Keeping the architecture simple makes debugging easier and enables direct output comparison between CPU and GPU implementations.
 
 ### GPU Architecture
 
@@ -82,7 +81,7 @@ https://youtu.be/6ZOK-FqO-T4
   <img src="assets/img/gpu_architecture.jpg" alt="GPU Architecture" width="100%">
 </p>
 
-> [!IMPORTANT] > **GPU Architecture Enhancements:** The GPU version adds **BatchNorm** and **PReLU** layers. With GPU's compute power, we can include these complex components without impacting training time:
+> **GPU Architecture Enhancements:** The GPU version adds **BatchNorm** and **PReLU** layers. With GPU's compute power, we can include these complex components without impacting training time:
 >
 > - **BatchNorm:** Uses batch mean/variance during training, accumulated running stats during inference. Impact: +5-10% accuracy and stabilized training. _Note: A common implementation bug is failing to distinguish between training and inference modes._
 > - **PReLU (Parametric ReLU):** `f(x) = max(0,x) + α[c] * min(0,x)` where α is learnable per-channel (initialized at 0.25), unlike LeakyReLU's fixed 0.01 slope. The model learns optimal slopes for each channel with minimal parameter overhead.
@@ -204,7 +203,7 @@ cd ..
 # See the Notebooks section below for ready-to-use Colab/Kaggle notebooks
 ```
 
-> [!TIP] > **Recommended:** Use our pre-configured notebooks on [Google Colab](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks) or [Kaggle](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks) for the easiest setup with GPU support. See the [Notebooks](#notebooks) section for all available options.
+> **Recommended:** Use our pre-configured notebooks on [Google Colab](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks) or [Kaggle](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks) for the easiest setup with GPU support. See the [Notebooks](#notebooks) section for all available options.
 
 ---
 
@@ -269,7 +268,6 @@ Homogenous-AutoEncoder/
 └── README.md
 ```
 
-> [!IMPORTANT]
 > For the full project report with detailed analysis, see [`docs/report.pdf`](docs/report.pdf) or run the [`report.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/report/notebooks/report.ipynb) notebook.
 
 ---
@@ -360,7 +358,7 @@ All notebooks are available in the [`feat/enhancement`](https://github.com/PrORa
 
 - [LVI CIFAR-100 Classifier PyTorch](https://github.com/Bigeco/lvi-cifar100-classifier-pytorch) - Reference implementation for CIFAR classification
 
-> [!NOTE] > **Key Learnings from References:**
+> **Key Learnings from References:**
 >
 > - **SGDR paper:** Informed our learning rate scheduling strategy with warm restarts, which helps escape local minima and improves convergence on CIFAR-10.
 > - **Large Minibatch SGD paper:** Guided our batch size selection and learning rate scaling rules. The linear scaling rule (lr × batch_size/256) was crucial for stable training with larger batches on GPU.
