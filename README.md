@@ -86,6 +86,71 @@ This project implements a **GPU-accelerated Convolutional Autoencoder** for unsu
 
 ---
 
+## Detailed Breakdown
+
+### Phase 1: CPU Baseline
+- **Implementation:** Standard C++ with OpenMP for multi-threading.
+- **Performance:** ~86.7 hours training time (`0.3 img/sec`).
+- **Bottleneck:** Sequential processing and lack of vectorization.
+
+### Phase 2: GPU Naive (Foundation)
+- **Implementation:** Ported logic to CUDA using global memory.
+- **Performance:** ~102 minutes training time (`163 img/sec`).
+- **Speedup:** ~51× vs CPU.
+- **Bottleneck:** Global memory bandwidth saturation.
+
+### Phase 3: GPU Optimized (Peak Performance)
+- **Goal:** Maximize hardware utilization.
+- **Techniques:**
+  1. **Shared Memory Tiling:** Loaded image blocks into L1/Shared memory to reuse data, reducing global memory access by 3-4×. Each input pixel is read once into shared memory then reused by multiple threads.
+  2. **cuDNN Integration:** Leveraged NVIDIA's optimized convolution algorithms (GEMM-based, Winograd, FFT) with automatic algorithm selection.
+  3. **Vectorized Operations:** Used `float4` to process 4 floats simultaneously, increasing memory bandwidth and instruction throughput.
+  4. **Double Buffering:** Created concurrent CPU-GPU pipelines with pinned memory to hide data transfer latency.
+- **Performance:** **~10.3 min** training time (`1,618 img/sec`).
+- **Speedup:** **~505×** vs CPU.
+
+### Phase 4: BCE Loss + Advanced Training (Model Quality)
+- **Goal:** Improve feature learnability for classification.
+- **Techniques:**
+  - **Loss Function:** Replaced MSE with **Binary Cross-Entropy (BCE)** combined with **Sigmoid** activation.
+  - **Optimizer:** Adopted **AdamW** (decoupled weight decay) for adaptive per-parameter learning rates.
+  - **LR Schedule:** Linear warmup (5 epochs) + Cosine Annealing for smooth convergence.
+  - **Architecture:** Replaced ReLU with **PReLU** (Parametric ReLU) to prevent dying neurons.
+  - **Data Augmentation:** Horizontal flip, random crop, and cutout for regularization.
+
+**Why Change the Loss Function?**
+
+| Feature | MSE (Phase 2-3) | BCE + Sigmoid (Phase 4) |
+|:--------|:----------------|:------------------------|
+| **Output Range** | Unbounded $(-\infty, \infty)$ | Strictly $[0, 1]$ (Matches Pixels) |
+| **Gradient Behavior** | Linear with error (slow at convergence) | Steep near errors (fast correction) |
+| **Reconstruction** | Tends to produce blurry images | Sharp edges and clear details |
+
+**Advanced Training Components:**
+
+1. **PReLU Integration:** Unlike standard ReLU which zeroes out negative gradients ("dead neurons"), PReLU introduces a learnable slope $\alpha$ for negative inputs, adapting to the data distribution. Each channel learns its optimal slope.
+
+2. **AdamW Optimizer:** Combines momentum (tracking gradient direction) with adaptive learning rates (tracking gradient magnitude). Decoupled weight decay ensures effective regularization without gradient interference.
+
+3. **Warmup + Cosine Schedule:** 
+   - Warmup: LR starts at 20% and increases to 100% over 5 epochs, allowing BatchNorm stats to stabilize.
+   - Cosine Annealing: Smooth decay from 100% to 0.1%, enabling exploration early and exploitation late.
+
+4. **Gradient Clipping:** Essential for BCE loss where gradients can explode when predictions are near 0 or 1. Per-element clipping with `max_norm=1.0` prevents NaN/Inf.
+
+- **Result:** Maintains peak performance (**~505× speedup**) while achieving **highest classification accuracy (~71.2%)**.
+
+### Phase 5: Feature Extraction + SVM Classification
+- **Goal:** Evaluate learned representations on downstream classification.
+- **Pipeline:**
+  1. Extract 8,192-dimensional latent features from trained encoder.
+  2. Apply L2 normalization to handle varying feature scales.
+  3. Train SVM with RBF kernel on normalized features.
+- **Acceleration:** cuML (RAPIDS) provides 15-30× speedup over sklearn for PCA and SVM.
+- **Result:** ~71.2% accuracy on CIFAR-10 test set.
+
+---
+
 ## Results Summary
 
 ### Training Performance
@@ -275,6 +340,60 @@ All notebooks are available in the [`feat/enhancement`](https://github.com/PrORa
 > - **SGDR paper:** Informed our learning rate scheduling strategy with warm restarts, which helps escape local minima and improves convergence on CIFAR-10.
 > - **Large Minibatch SGD paper:** Guided our batch size selection and learning rate scaling rules. The linear scaling rule (lr × batch_size/256) was crucial for stable training with larger batches on GPU.
 > - **LVI CIFAR-100 project:** Provided practical insights on autoencoder architecture design and feature extraction strategies for image classification tasks.
+
+---
+
+## FAQ
+
+<details>
+<summary><strong>Why implement from scratch instead of using PyTorch/TensorFlow?</strong></summary>
+
+The primary goal of this project is educational - understanding how deep learning libraries work at a low-level. By implementing everything from scratch in CUDA C++, we gain deep insight into forward pass, backward pass, gradient computation, and optimization mechanics. This knowledge helps with debugging and optimization in real-world scenarios.
+</details>
+
+<details>
+<summary><strong>cuDNN vs Tiled Convolution - when to use which?</strong></summary>
+
+- **cuDNN:** Best for production deployments. It's the fastest option, heavily optimized by NVIDIA engineers for each GPU architecture with algorithms like Winograd and Tensor Core utilization.
+- **Tiled Convolution:** Best for learning and understanding GPU optimization principles. Also useful when you can't have external dependencies. In practice, most frameworks (PyTorch, TensorFlow) use cuDNN under the hood.
+</details>
+
+<details>
+<summary><strong>Is ~71% accuracy considered good for CIFAR-10?</strong></summary>
+
+CIFAR-10 state-of-the-art is ~99% with complex architectures like ResNet, EfficientNet, or Vision Transformers. However, the focus of this project is **GPU optimization and parallel programming**, not achieving SOTA accuracy. Achieving ~71% with unsupervised feature learning (autoencoder) + SVM is a reasonable baseline that demonstrates the features learned are meaningful.
+</details>
+
+<details>
+<summary><strong>Why use SVM instead of fully-connected layers for classification?</strong></summary>
+
+1. **Simplicity:** SVM works well with pre-extracted features without additional training loops.
+2. **Interpretability:** Support vectors can be analyzed to understand decision boundaries.
+3. **Efficiency:** With good features, SVM training is fast and doesn't require GPU.
+4. **Separation of concerns:** Clearly separates feature learning (autoencoder) from classification (SVM).
+
+In production, you could replace SVM with FC layers and fine-tune end-to-end for potentially better results.
+</details>
+
+<details>
+<summary><strong>What is the most common BatchNorm implementation bug?</strong></summary>
+
+Failing to distinguish between **training mode** and **inference mode**:
+- **Training:** Use batch statistics (mean/variance computed from current batch) and update running statistics with momentum.
+- **Inference:** Use accumulated running statistics (not batch statistics).
+
+Using running stats during training (especially early training when they're initialized to 0/1) leads to incorrect normalization and prevents the model from learning. This single bug can cause 5-10% accuracy drop.
+</details>
+
+<details>
+<summary><strong>Why does BCE Loss produce better features than MSE for classification?</strong></summary>
+
+1. **Gradient dynamics:** BCE gradients are steep when predictions are wrong (near 0 or 1), forcing faster correction. MSE gradients are linear and can be small near convergence.
+2. **Output semantics:** BCE with Sigmoid constrains outputs to [0,1], matching pixel value range. MSE allows unbounded outputs.
+3. **Reconstruction quality:** BCE encourages the model to "commit" to values near 0 or 1, producing sharper reconstructions with clearer edges. MSE tends to average possibilities, creating blurry images.
+
+Sharper reconstructions indicate the encoder learned more discriminative features.
+</details>
 
 ---
 
