@@ -266,27 +266,31 @@ Homogenous-AutoEncoder/
 
 ## Notebooks
 
-All notebooks are available in the [`feat/enhancement`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/tree/feat/enhancement/notebooks) branch:
+All notebooks are available in the [`feat/enhancement`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/tree/feat/enhancement/notebooks) branch. We also provide you with both Google Colab and Kaggle versions for each phase and methods:
 
 ### Phase 2: GPU Naive
 - [`Phase2_Colab.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase2_Colab.ipynb)
 - [`Phase2_Kaggle.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase2_Kaggle.ipynb)
 
 ### Phase 3: GPU Optimized
-- [`Phase3_Colab.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase3_Colab.ipynb) - Tiled convolution
+- [`Phase3_Colab.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase3_Colab.ipynb) - CuDNN Integration
 - [`Phase3_Kaggle.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase3_Kaggle.ipynb)
 - [`Phase3_Colab_BCE.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase3_Colab_BCE.ipynb) - BCE loss version
 - [`Phase3_Kaggle_BCE.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase3_Kaggle_BCE.ipynb)
-- [`enhancement/Phase3_Colab_Tiled.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/enhancement/Phase3_Colab_Tiled.ipynb)
+- [`Phase3_Colab_Tiled.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase3_Colab_Tiled.ipynb) - Tiled convolution
+- [`Phase3_Kaggle_Tiled.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase3_Kaggle_Tiled.ipynb)
 
 ### Phase 4: SVM Classification
 - [`Phase4_Colab.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase4_Colab.ipynb)
 - [`Phase4_Kaggle.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase4_Kaggle.ipynb)
 - [`Phase4_Kaggle_PCA.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase4_Kaggle_PCA.ipynb) - With PCA
-- [`phase3-4-kaggle-bce-cuml.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/phase3-4-kaggle-bce-cuml.ipynb) - BCE + cuML SVM
+
+### Best Optimized version for Phase 3-4
+- [`Phase3-4-Colab.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase3-4-Colab.ipynb) - BCE + cuML SVM
+- [`Phase3-4-Kaggle.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks/Phase3-4-Kaggle.ipynb)
 
 ### Full Report
-- [`report.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/report/notebooks/report.ipynb) - Complete project report with all phases
+- [`report.ipynb`](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/main/notebooks/report.ipynb) - Complete project report with all phases 
 
 ---
 
