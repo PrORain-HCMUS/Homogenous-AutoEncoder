@@ -1,0 +1,11 @@
+# Jupyter Notebooks - mark as vendored to exclude from language stats
+*.ipynb linguist-vendored
+
+# Directories with non-core content - mark as vendored
+notebooks/** linguist-vendored
+results/** linguist-vendored
+
+# Ensure C++ and CUDA files are counted in language stats
+*.cpp linguist-vendored=false
+*.h linguist-vendored=false
+*.cu linguist-vendored=false
