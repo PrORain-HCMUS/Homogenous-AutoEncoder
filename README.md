@@ -20,7 +20,7 @@
 
 This project implements a **GPU-accelerated Convolutional Autoencoder** for unsupervised feature learning on CIFAR-10, achieving **~505× speedup** over CPU baseline and **~71.2% classification accuracy** using extracted features with SVM.
 
-## Link Youtube
+### Link Youtube
 
 https://youtu.be/6ZOK-FqO-T4
 
