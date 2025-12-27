@@ -365,51 +365,87 @@ All notebooks are available in the [`feat/enhancement`](https://github.com/PrORa
 <details>
 <summary><strong>Why implement from scratch instead of using PyTorch/TensorFlow?</strong></summary>
 
+<br>
+
+> **Short answer:** Educational purposes - understanding deep learning at the lowest level.
+
 The primary goal of this project is educational - understanding how deep learning libraries work at a low-level. By implementing everything from scratch in CUDA C++, we gain deep insight into forward pass, backward pass, gradient computation, and optimization mechanics. This knowledge helps with debugging and optimization in real-world scenarios.
+
 </details>
 
 <details>
 <summary><strong>cuDNN vs Tiled Convolution - when to use which?</strong></summary>
 
-- **cuDNN:** Best for production deployments. It's the fastest option, heavily optimized by NVIDIA engineers for each GPU architecture with algorithms like Winograd and Tensor Core utilization.
-- **Tiled Convolution:** Best for learning and understanding GPU optimization principles. Also useful when you can't have external dependencies. In practice, most frameworks (PyTorch, TensorFlow) use cuDNN under the hood.
+<br>
+
+| Approach | Best For | Why |
+|:---------|:---------|:----|
+| **cuDNN** | Production deployments | Fastest option, heavily optimized by NVIDIA engineers with Winograd and Tensor Core utilization |
+| **Tiled Convolution** | Learning GPU optimization | Great for understanding shared memory, coalescing, and memory hierarchy principles |
+
+> **Note:** Most frameworks (PyTorch, TensorFlow) use cuDNN under the hood.
+
 </details>
 
 <details>
 <summary><strong>Is ~71% accuracy considered good for CIFAR-10?</strong></summary>
 
-CIFAR-10 state-of-the-art is ~99% with complex architectures like ResNet, EfficientNet, or Vision Transformers. However, the focus of this project is **GPU optimization and parallel programming**, not achieving SOTA accuracy. Achieving ~71% with unsupervised feature learning (autoencoder) + SVM is a reasonable baseline that demonstrates the features learned are meaningful.
+<br>
+
+| Method | Accuracy |
+|:-------|:---------|
+| SOTA (ResNet, ViT, etc.) | ~99% |
+| **Our Autoencoder + SVM** | **~71%** |
+
+The focus of this project is **GPU optimization and parallel programming**, not achieving SOTA accuracy. Achieving ~71% with unsupervised feature learning demonstrates the learned features are meaningful.
+
 </details>
 
 <details>
 <summary><strong>Why use SVM instead of fully-connected layers for classification?</strong></summary>
 
-1. **Simplicity:** SVM works well with pre-extracted features without additional training loops.
-2. **Interpretability:** Support vectors can be analyzed to understand decision boundaries.
-3. **Efficiency:** With good features, SVM training is fast and doesn't require GPU.
-4. **Separation of concerns:** Clearly separates feature learning (autoencoder) from classification (SVM).
+<br>
 
-In production, you could replace SVM with FC layers and fine-tune end-to-end for potentially better results.
+| Reason | Explanation |
+|:-------|:------------|
+| **Simplicity** | Works well with pre-extracted features without additional training loops |
+| **Interpretability** | Support vectors can be analyzed to understand decision boundaries |
+| **Efficiency** | Fast training, doesn't require GPU |
+| **Separation of concerns** | Clearly separates feature learning (autoencoder) from classification (SVM) |
+
+> **Tip:** In production, you could replace SVM with FC layers and fine-tune end-to-end for potentially better results.
+
 </details>
 
 <details>
 <summary><strong>What is the most common BatchNorm implementation bug?</strong></summary>
 
-Failing to distinguish between **training mode** and **inference mode**:
-- **Training:** Use batch statistics (mean/variance computed from current batch) and update running statistics with momentum.
-- **Inference:** Use accumulated running statistics (not batch statistics).
+<br>
 
-Using running stats during training (especially early training when they're initialized to 0/1) leads to incorrect normalization and prevents the model from learning. This single bug can cause 5-10% accuracy drop.
+> **Bug:** Failing to distinguish between **training mode** and **inference mode**.
+
+| Mode | Correct Behavior |
+|:-----|:-----------------|
+| **Training** | Use batch statistics (mean/variance from current batch) and update running statistics |
+| **Inference** | Use accumulated running statistics only |
+
+Using running stats during training (especially early when initialized to 0/1) leads to incorrect normalization. **Impact:** 5-10% accuracy drop.
+
 </details>
 
 <details>
 <summary><strong>Why does BCE Loss produce better features than MSE for classification?</strong></summary>
 
-1. **Gradient dynamics:** BCE gradients are steep when predictions are wrong (near 0 or 1), forcing faster correction. MSE gradients are linear and can be small near convergence.
-2. **Output semantics:** BCE with Sigmoid constrains outputs to [0,1], matching pixel value range. MSE allows unbounded outputs.
-3. **Reconstruction quality:** BCE encourages the model to "commit" to values near 0 or 1, producing sharper reconstructions with clearer edges. MSE tends to average possibilities, creating blurry images.
+<br>
 
-Sharper reconstructions indicate the encoder learned more discriminative features.
+| Aspect | MSE | BCE |
+|:-------|:----|:----|
+| **Gradient dynamics** | Linear, can be small near convergence | Steep when predictions are wrong |
+| **Output range** | Unbounded | Constrained to [0,1] via Sigmoid |
+| **Reconstruction** | Tends to produce blurry images | Sharper edges and clearer details |
+
+> **Key insight:** Sharper reconstructions indicate the encoder learned more discriminative features, which benefits downstream classification.
+
 </details>
 
 ---
