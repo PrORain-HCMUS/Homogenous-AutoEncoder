@@ -79,24 +79,7 @@ CIFAR10Dataset::CIFAR10Dataset(const std::string &data_dir) {
     test_ = load_cifar10_batch_impl(test_path);
 }
 
-// ============================================================
-// DATA AUGMENTATION IMPLEMENTATION
-// ============================================================
-// Designed for CIFAR-10 with 10 classes:
-// airplane, automobile, bird, cat, deer, dog, frog, horse, ship, truck
-//
-// Augmentations chosen:
-// 1. Random Horizontal Flip (50%): Safe for all classes
-//    - Objects like cars, animals, planes look natural when flipped
-//    - Ships and trucks are symmetric
-// 2. Random Crop with Padding: Simulates slight translation/scale variation
-//    - Pad image to 40x40, then crop random 32x32 region
-//    - Helps model learn position-invariant features
-// ============================================================
-
 void CIFAR10Dataset::horizontal_flip_image(float* image) {
-    // Image is in CHW format: 3 channels x 32 height x 32 width
-    // Flip each row horizontally for each channel
     constexpr int H = IMAGE_HEIGHT;
     constexpr int W = IMAGE_WIDTH;
     
@@ -104,7 +87,6 @@ void CIFAR10Dataset::horizontal_flip_image(float* image) {
         float* channel = image + c * H * W;
         for (int h = 0; h < H; ++h) {
             float* row = channel + h * W;
-            // Reverse the row
             for (int w = 0; w < W / 2; ++w) {
                 std::swap(row[w], row[W - 1 - w]);
             }
@@ -113,17 +95,13 @@ void CIFAR10Dataset::horizontal_flip_image(float* image) {
 }
 
 void CIFAR10Dataset::random_crop_image(float* image, int padding, std::mt19937& rng) {
-    // Pad image with zeros, then crop random 32x32 region
-    // This simulates slight translation augmentation
-    constexpr int H = IMAGE_HEIGHT;  // 32
-    constexpr int W = IMAGE_WIDTH;   // 32
-    const int padded_H = H + 2 * padding;  // 40 if padding=4
-    const int padded_W = W + 2 * padding;  // 40 if padding=4
+    constexpr int H = IMAGE_HEIGHT;
+    constexpr int W = IMAGE_WIDTH;
+    const int padded_H = H + 2 * padding;
+    const int padded_W = W + 2 * padding;
     
-    // Create padded image (zero-padded)
     std::vector<float> padded(IMAGE_CHANNELS * padded_H * padded_W, 0.0f);
     
-    // Copy original image to center of padded image
     for (int c = 0; c < IMAGE_CHANNELS; ++c) {
         for (int h = 0; h < H; ++h) {
             for (int w = 0; w < W; ++w) {
@@ -134,13 +112,11 @@ void CIFAR10Dataset::random_crop_image(float* image, int padding, std::mt19937& 
         }
     }
     
-    // Random crop offset
-    std::uniform_int_distribution<int> dist_h(0, 2 * padding);  // 0 to 8
-    std::uniform_int_distribution<int> dist_w(0, 2 * padding);  // 0 to 8
+    std::uniform_int_distribution<int> dist_h(0, 2 * padding);
+    std::uniform_int_distribution<int> dist_w(0, 2 * padding);
     int offset_h = dist_h(rng);
     int offset_w = dist_w(rng);
     
-    // Extract cropped region back to original image
     for (int c = 0; c < IMAGE_CHANNELS; ++c) {
         for (int h = 0; h < H; ++h) {
             for (int w = 0; w < W; ++w) {
@@ -153,7 +129,6 @@ void CIFAR10Dataset::random_crop_image(float* image, int padding, std::mt19937& 
 }
 
 void CIFAR10Dataset::augment_image(float* image, const AugmentConfig& config, std::mt19937& rng) {
-    // Apply random horizontal flip (50% probability)
     if (config.horizontal_flip) {
         std::uniform_real_distribution<float> dist(0.0f, 1.0f);
         if (dist(rng) < 0.5f) {
@@ -161,12 +136,10 @@ void CIFAR10Dataset::augment_image(float* image, const AugmentConfig& config, st
         }
     }
     
-    // Apply random crop with padding
     if (config.random_crop && config.crop_padding > 0) {
         random_crop_image(image, config.crop_padding, rng);
     }
     
-    // Apply color jitter (brightness, contrast, saturation)
     if (config.color_jitter) {
         float brightness_delta = 0.0f;
         float contrast_factor = 1.0f;
@@ -190,19 +163,18 @@ void CIFAR10Dataset::augment_image(float* image, const AugmentConfig& config, st
             float g = image[IMAGE_HEIGHT * IMAGE_WIDTH + i];
             float b = image[2 * IMAGE_HEIGHT * IMAGE_WIDTH + i];
             
-            float gray = 0.299f * r + 0.587f * g + 0.114f * b;
+            r = r + brightness_delta;
+            g = g + brightness_delta;
+            b = b + brightness_delta;
             
             r = (r - 0.5f) * contrast_factor + 0.5f;
             g = (g - 0.5f) * contrast_factor + 0.5f;
             b = (b - 0.5f) * contrast_factor + 0.5f;
             
+            float gray = 0.299f * r + 0.587f * g + 0.114f * b;
             r = gray + saturation_factor * (r - gray);
             g = gray + saturation_factor * (g - gray);
             b = gray + saturation_factor * (b - gray);
-            
-            r = r + brightness_delta;
-            g = g + brightness_delta;
-            b = b + brightness_delta;
             
             image[i] = std::min(1.0f, std::max(0.0f, r));
             image[IMAGE_HEIGHT * IMAGE_WIDTH + i] = std::min(1.0f, std::max(0.0f, g));
@@ -210,11 +182,9 @@ void CIFAR10Dataset::augment_image(float* image, const AugmentConfig& config, st
         }
     }
     
-    // Apply Cutout (random erasing) - 50% probability
     if (config.cutout && config.cutout_size > 0) {
         std::uniform_real_distribution<float> prob_dist(0.0f, 1.0f);
         if (prob_dist(rng) < 0.5f) {
-            // Random position for cutout center
             std::uniform_int_distribution<int> pos_h(0, IMAGE_HEIGHT - 1);
             std::uniform_int_distribution<int> pos_w(0, IMAGE_WIDTH - 1);
             int center_h = pos_h(rng);
@@ -226,7 +196,6 @@ void CIFAR10Dataset::augment_image(float* image, const AugmentConfig& config, st
             int w_start = std::max(0, center_w - half_size);
             int w_end = std::min(IMAGE_WIDTH, center_w + half_size);
             
-            // Zero out the region across all channels
             for (int c = 0; c < IMAGE_CHANNELS; ++c) {
                 for (int h = h_start; h < h_end; ++h) {
                     for (int w = w_start; w < w_end; ++w) {
@@ -234,6 +203,28 @@ void CIFAR10Dataset::augment_image(float* image, const AugmentConfig& config, st
                     }
                 }
             }
+        }
+    }
+    
+    if (config.random_grayscale && config.grayscale_prob > 0.0f) {
+        std::uniform_real_distribution<float> prob_dist(0.0f, 1.0f);
+        if (prob_dist(rng) < config.grayscale_prob) {
+            for (int i = 0; i < IMAGE_HEIGHT * IMAGE_WIDTH; ++i) {
+                float r = image[i];
+                float g = image[IMAGE_HEIGHT * IMAGE_WIDTH + i];
+                float b = image[2 * IMAGE_HEIGHT * IMAGE_WIDTH + i];
+                float gray = 0.299f * r + 0.587f * g + 0.114f * b;
+                image[i] = gray;
+                image[IMAGE_HEIGHT * IMAGE_WIDTH + i] = gray;
+                image[2 * IMAGE_HEIGHT * IMAGE_WIDTH + i] = gray;
+            }
+        }
+    }
+    
+    if (config.gaussian_noise && config.noise_std > 0.0f) {
+        std::normal_distribution<float> noise_dist(0.0f, config.noise_std);
+        for (int i = 0; i < IMAGE_SIZE; ++i) {
+            image[i] = std::min(1.0f, std::max(0.0f, image[i] + noise_dist(rng)));
         }
     }
 }
