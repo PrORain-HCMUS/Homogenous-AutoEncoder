@@ -18,7 +18,7 @@
 
 ## Project Overview
 
-This project implements a **GPU-accelerated Convolutional Autoencoder** for unsupervised feature learning on CIFAR-10, achieving **~505× speedup** over CPU baseline and **70% classification accuracy** using extracted features with SVM.
+This project implements a **GPU-accelerated Convolutional Autoencoder** for unsupervised feature learning on CIFAR-10, achieving **~505× speedup** over CPU baseline and **~71.2% classification accuracy** using extracted features with SVM.
 
 ### Group Members
 
@@ -33,59 +33,56 @@ This project implements a **GPU-accelerated Convolutional Autoencoder** for unsu
 | Metric | Target | Achieved | Status |
 |:-------|:-------|:---------|:------:|
 | GPU Speedup | >50× | **~505×** | Exceeded |
-| Classification Accuracy | >50% | **70%** | Exceeded |
-| Training Time (50K images) | <15 min | **~10.3 min** | Met |
+| Classification Accuracy | >50% | **~71.2%** | Exceeded |
+| Training Time (50K images) | approx. 10 min | **~10.3 min** | Met |
 
 ---
 
 ## Implementation Phases
 
-| Phase | Description | Key Optimization | Speedup |
-|:-----:|:------------|:-----------------|:-------:|
-| **1** | CPU Baseline | OpenMP parallelization | 1× |
-| **2** | GPU Naive | Basic CUDA kernels | ~51× |
-| **3.1** | GPU Tiled | Shared memory tiling | ~505× |
-| **3.2** | GPU cuDNN | cuDNN library integration | ~482× |
-| **3.3** | GPU BCE | BCE loss + Sigmoid activation | ~292× |
-| **4** | SVM Classification | cuML GPU-accelerated SVM | - |
+| Phase | Description | Training Time (50K) | Speedup vs CPU | Incremental Speedup | Key Optimization |
+|:-----:|:------------|:--------------------|:---------------|:--------------------|:-----------------|
+| **1** | CPU Baseline | ~86.7 hours | 1.0× | - | OpenMP |
+| **2** | GPU Basic | ~102.1 min | ~51× | 51× | Basic parallelization |
+| **3.1** | GPU Tiled | ~10.3 min | **~505×** | ~10× | Shared memory |
+| **3.2** | GPU cuDNN | ~10.8 min | ~482× | ~1× | cuDNN library |
+| **3.3** | GPU BCE | ~10.8 min | ~482× | - | BCE loss function |
+| **4** | SVM Classification | - | - | - | cuML GPU-accelerated SVM |
 
 ### Phase 3 Comparison
 
 | Version | Training Time | Final Loss | SVM Accuracy | Best For |
 |:--------|:--------------|:-----------|:-------------|:---------|
-| Tiled | ~10.3 min | 0.0114 | ~67% | Learning CUDA optimization |
-| cuDNN | ~10.8 min | 0.0114 | ~67% | Production deployment |
-| **BCE** | ~17.8 min | 0.55 | **~70%** | Best classification accuracy |
+| Tiled | ~10.3 min | 0.0114 | ~69.2% | Learning CUDA optimization |
+| cuDNN | ~10.8 min | 0.0114 | ~69.2% | Production deployment |
+| **BCE** | ~10.8 min | 0.55 | **~71.2%** | Best classification accuracy |
 
 > [!TIP]
-> The **BCE loss version** produces better features for classification despite slower training, because BCE gradients are more stable for pixel-wise reconstruction.
+> The **BCE loss version** produces better features for classification, because BCE gradients are more stable for pixel-wise reconstruction.
 
 ---
 
 ## Network Architecture
 
-```
-INPUT: (N, 3, 32, 32) - CIFAR-10 RGB images
-  ↓
-ENCODER:
-  Conv2D(3→256, 3×3, pad=1) + BatchNorm + PReLU  → (N, 256, 32, 32)
-  MaxPool(2×2)                                    → (N, 256, 16, 16)
-  Conv2D(256→128, 3×3, pad=1) + BatchNorm + PReLU → (N, 128, 16, 16)
-  MaxPool(2×2)                                    → (N, 128, 8, 8)
-  ↓
-LATENT: (N, 128, 8, 8) = 8,192 features
-  ↓
-DECODER:
-  Conv2D(128→128, 3×3, pad=1) + BatchNorm + PReLU → (N, 128, 8, 8)
-  UpSample(2×)                                     → (N, 128, 16, 16)
-  Conv2D(128→256, 3×3, pad=1) + BatchNorm + PReLU  → (N, 256, 16, 16)
-  UpSample(2×)                                     → (N, 256, 32, 32)
-  Conv2D(256→3, 3×3, pad=1) + Sigmoid              → (N, 3, 32, 32)
-  ↓
-OUTPUT: (N, 3, 32, 32) - Reconstructed images
+### CPU Architecture
+<p align="center">
+  <img src="assets/img/cpu_architecture.jpg" alt="CPU Architecture" width="100%">
+</p>
 
-Total Parameters: ~755K (includes BatchNorm γ/β and PReLU α)
-```
+> [!IMPORTANT]
+> **CPU Architecture Design:** The CPU baseline uses a simple **Conv + ReLU** architecture without BatchNorm. This intentional simplicity serves Phase 1's goal of creating a baseline for correctness verification and performance measurement. Keeping the architecture simple makes debugging easier and enables direct output comparison between CPU and GPU implementations.
+
+### GPU Architecture
+<p align="center">
+  <img src="assets/img/gpu_architecture.jpg" alt="GPU Architecture" width="100%">
+</p>
+
+> [!IMPORTANT]
+> **GPU Architecture Enhancements:** The GPU version adds **BatchNorm** and **PReLU** layers. With GPU's compute power, we can include these complex components without impacting training time:
+> - **BatchNorm:** Uses batch mean/variance during training, accumulated running stats during inference. Impact: +5-10% accuracy and stabilized training. *Note: A common implementation bug is failing to distinguish between training and inference modes.*
+> - **PReLU (Parametric ReLU):** `f(x) = max(0,x) + α[c] * min(0,x)` where α is learnable per-channel (initialized at 0.25), unlike LeakyReLU's fixed 0.01 slope. The model learns optimal slopes for each channel with minimal parameter overhead.
+> - **Sigmoid:** Only applied when training with BCE loss. MSE loss (Phase 2, Version 2) outputs directly from decoder since MSE doesn't require outputs in [0,1] range.
+> - **Latent Space:** Both architectures use **128×8×8 = 8,192 features** as the bottleneck representation, which is later extracted for SVM classification.
 
 ---
 
@@ -93,23 +90,23 @@ Total Parameters: ~755K (includes BatchNorm γ/β and PReLU α)
 
 ### Training Performance
 
-| Phase | Training Time (50K) | Speedup vs CPU | Final Loss |
-|:------|:--------------------|:---------------|:-----------|
-| CPU Baseline | ~86.7 hours | 1.0× | 0.2646 |
-| GPU Naive | ~102.1 min | ~51× | 0.0224 |
-| GPU Tiled | ~10.3 min | **~505×** | 0.0114 |
-| GPU cuDNN | ~10.8 min | ~482× | 0.0114 |
-| GPU BCE | ~17.8 min | ~292× | 0.4648 |
+| Phase | Training Time (50K) | Speedup vs CPU | Incremental Speedup | Key Optimization |
+|:------|:--------------------|:---------------|:--------------------|:-----------------|
+| CPU Baseline | ~86.7 hours | 1.0× | - | OpenMP |
+| GPU Basic | ~102.1 min | ~51× | 51× | Basic parallelization |
+| **GPU Tiled** | **~10.3 min** | **~505×** | ~10× | Shared memory |
+| GPU cuDNN | ~10.8 min | ~482× | ~1× | cuDNN library |
+| GPU BCE | ~10.8 min | ~482× | - | BCE loss function |
 
 ### Classification Accuracy (SVM on Extracted Features)
 
-| Weights Source | Test Accuracy | Best Class | Worst Class |
-|:---------------|:--------------|:-----------|:------------|
-| Phase 1 CPU | 68.0% | ship | cat |
-| Phase 2 GPU Naive | 67.0% | ship | cat |
-| Phase 3 Tiled | 66.6% | ship | cat |
-| Phase 3 cuDNN | 66.6% | ship | cat |
-| **Phase 3 BCE** | **70.5%** | ship (~80%) | cat (~56%) |
+| Phase | Test Accuracy | Best Class | Worst Class |
+|:------|:--------------|:-----------|:------------|
+| Phase 1 CPU | ~69.2% | automobile | cat |
+| Phase 2 GPU Naive | ~69% | ship | cat |
+| Phase 3 Tiled | ~69.2% | ship | cat |
+| Phase 3 cuDNN | ~69.2% | ship  | cat |
+| **Phase 3 BCE** | **~71.2%** | automobile  (~80.7%) | cat (~57.2%) |
 
 ---
 
@@ -127,13 +124,12 @@ tar -xzf cifar-10-binary.tar.gz
 mv cifar-10-batches-bin/* .
 cd ..
 
-# 3. Build and run (choose one)
-make gpu_train_opt           # Phase 3 optimized
-./gpu_train_opt --data data --epochs 20 --batch 64
-
-make full_pipeline           # Phase 4 with SVM
-./full_pipeline --data data --epochs 20 --batch 64
+# 3. Run notebooks (recommended)
+# See the Notebooks section below for ready-to-use Colab/Kaggle notebooks
 ```
+
+> [!TIP]
+> **Recommended:** Use our pre-configured notebooks on [Google Colab](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks) or [Kaggle](https://github.com/PrORain-HCMUS/Homogenous-AutoEncoder/blob/feat/enhancement/notebooks) for the easiest setup with GPU support. See the [Notebooks](#notebooks) section for all available options.
 
 ---
 
@@ -141,27 +137,59 @@ make full_pipeline           # Phase 4 with SVM
 
 ```
 Homogenous-AutoEncoder/
+├── assets/
+│   └── img/                    # Architecture diagrams
+│       ├── cpu_architecture.jpg
+│       └── gpu_architecture.jpg
+├── command/                    # Build scripts
+│   ├── build_all.bat
+│   ├── build_phase1.bat
+│   ├── build_phase2.bat
+│   └── build_phase3.bat
+├── data/                       # CIFAR-10 binary files
 ├── include/
-│   ├── autoencoder.h       # CPU autoencoder class
-│   ├── gpu_autoencoder.h   # GPU autoencoder class
-│   ├── layer.h             # CPU layer definitions
-│   ├── gpu_layer.h         # GPU layer definitions
-│   ├── dataset.h           # CIFAR-10 data loading
-│   └── cuda_utils.h        # CUDA error checking
+│   ├── autoencoder.h           # CPU autoencoder class
+│   ├── cuda_utils.h            # CUDA error checking
+│   ├── dataset.h               # CIFAR-10 data loading
+│   ├── gpu_augmentation.cuh    # GPU data augmentation
+│   ├── gpu_autoencoder.h       # GPU autoencoder class
+│   ├── gpu_layer.h             # GPU layer definitions
+│   ├── gpu_memory_pool.cuh     # GPU memory management
+│   ├── layer.h                 # CPU layer definitions
+│   └── svm_wrapper.h           # SVM wrapper for classification
+├── notebooks/                  # Jupyter notebooks
+│   ├── report_base.ipynb
+│   ├── report_github.ipynb
+│   └── report.ipynb
+├── results/                    # Training logs and results
+│   ├── phase-1/
+│   │   ├── cpu_phase1_log.csv  # CPU training metrics
+│   │   └── cpu_training.csv    # CPU training summary
+│   ├── phase-2/
+│   │   ├── phase2.csv          # GPU naive training metrics
+│   │   └── phase2.txt          # GPU naive training log
+│   └── phase-3/
+│       ├── phase3_bce.csv      # BCE loss training metrics
+│       ├── phase3_bce.txt      # BCE loss training log
+│       ├── phase3_opt.csv      # Optimized GPU training metrics
+│       ├── phase3_opt.txt      # Optimized GPU training log
+│       ├── phase3_tiled.csv    # Tiled convolution metrics
+│       └── phase3_tiled.txt    # Tiled convolution log
 ├── src/
-│   ├── main.cpp            # CPU training (Phase 1)
-│   ├── main_gpu.cu         # GPU training (Phase 2-3)
-│   ├── main_phase4.cu      # Full pipeline with SVM (Phase 4)
-│   ├── autoencoder.cpp     # CPU autoencoder
-│   ├── gpu_autoencoder.cu  # GPU autoencoder
-│   ├── layers_cpu.cpp      # CPU layer implementations
-│   ├── layers_gpu.cu       # Naive GPU kernels (Phase 2)
-│   ├── layers_gpu_opt.cu   # Optimized GPU kernels (Phase 3)
-│   └── dataset.cpp         # Data loading
-├── notebooks/              # Jupyter notebooks (see below)
-├── docs/                   # PDF reports
-├── results/                # Training logs and weights
-├── data/                   # CIFAR-10 binary files
+│   ├── autoencoder.cpp         # CPU autoencoder
+│   ├── dataset.cpp             # Data loading
+│   ├── gpu_autoencoder.cu      # GPU autoencoder
+│   ├── layers_cpu.cpp          # CPU layer implementations
+│   ├── layers_gpu.cu           # Naive GPU kernels (Phase 2)
+│   ├── layers_gpu_opt.cu       # Optimized GPU kernels (Phase 3)
+│   ├── main.cpp                # CPU training (Phase 1)
+│   ├── main_gpu.cu             # GPU training (Phase 2-3)
+│   ├── main_phase4.cu          # Full pipeline with SVM (Phase 4)
+│   ├── svm_wrapper.cpp         # SVM implementation
+│   └── verify_gpu.cu           # GPU verification
+├── .gitignore
+├── Description.pdf
+├── final_project.md
 ├── Makefile
 └── README.md
 ```
@@ -229,10 +257,24 @@ All notebooks are available in the [`feat/enhancement`](https://github.com/PrORa
 
 ## References
 
+### Datasets & Tools
 - [CIFAR-10 Dataset](https://www.cs.toronto.edu/~kriz/cifar.html)
 - [cuDNN Documentation](https://docs.nvidia.com/deeplearning/cudnn/)
 - [cuML SVM](https://docs.rapids.ai/api/cuml/stable/)
-- Hinton & Salakhutdinov (2006). "Reducing the Dimensionality of Data with Neural Networks"
+
+### Research Papers
+- Hinton & Salakhutdinov (2006). ["Reducing the Dimensionality of Data with Neural Networks"](https://www.science.org/doi/10.1126/science.1127647)
+- Loshchilov & Hutter (2017). ["SGDR: Stochastic Gradient Descent with Warm Restarts"](https://arxiv.org/abs/1608.03983)
+- Goyal et al. (2017). ["Accurate, Large Minibatch SGD: Training ImageNet in 1 Hour"](https://arxiv.org/abs/1706.02677)
+
+### Related Projects
+- [LVI CIFAR-100 Classifier PyTorch](https://github.com/Bigeco/lvi-cifar100-classifier-pytorch) - Reference implementation for CIFAR classification
+
+> [!NOTE]
+> **Key Learnings from References:**
+> - **SGDR paper:** Informed our learning rate scheduling strategy with warm restarts, which helps escape local minima and improves convergence on CIFAR-10.
+> - **Large Minibatch SGD paper:** Guided our batch size selection and learning rate scaling rules. The linear scaling rule (lr × batch_size/256) was crucial for stable training with larger batches on GPU.
+> - **LVI CIFAR-100 project:** Provided practical insights on autoencoder architecture design and feature extraction strategies for image classification tasks.
 
 ---
 
